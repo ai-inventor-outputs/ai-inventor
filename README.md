@@ -46,8 +46,8 @@ brew install postgresql@16 tmux
 ### Install
 
 ```bash
-git clone https://github.com/AMGrobelnik/ai-inventor-public.git
-cd ai-inventor-public
+git clone https://github.com/ai-inventor-outputs/ai-inventor.git
+cd ai-inventor
 
 # uv creates the venv and installs all four sub-packages (declared as a
 # uv workspace in the root pyproject.toml) in editable mode in one shot.
