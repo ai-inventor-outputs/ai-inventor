@@ -1,0 +1,35 @@
+# DBOS — Durable Workflow Runtime Configuration
+# =============================================
+# Public defaults. Per-machine overrides go in the gitignored sibling
+# ``dbos.private.yaml`` (deep-merged on top at load time, same convention
+# as ``server.yaml``). Secrets (DB passwords) belong in ``.env``.
+#
+# DBOS uses Postgres for its journal. The project-local cluster lives at
+# ``aii_data/db/pgdata/`` (same path as the existing Django/aii_inventor
+# DB) and is started by ``scripts/local/pg.sh start``.
+#
+# DBOS provisions TWO databases per app:
+#   - app_db    — for transactional `@DBOS.transaction()` callers (we
+#                 don't use these yet; created so the SDK is happy).
+#   - system_db — DBOS journal: workflows, steps, events. Auto-created
+#                 by DBOS at first launch, schema migrations applied
+#                 idempotently.
+
+dbos:
+  app_name: "aii_inventor"
+
+  # Postgres connection — defaults assume the project-local cluster.
+  postgres:
+    user: null               # null => os.environ["USER"]
+    password: null           # null => no password (trust auth via socket)
+    # Repo-relative socket dir. ``aii_lib.dbos_app`` resolves any non-
+    # absolute ``host:`` against the repo root, so this works on every
+    # contributor's machine and ships safely to the public mirror.
+    host: "aii_data/db/sock"
+    port: 5432
+    app_db_name: "aii_inventor"           # shared with Django
+    sys_db_name: "aii_inventor_dbos_sys"  # DBOS-only metadata
+
+  # Optional sentry-style observability (off in public default).
+  conductor:
+    enabled: false

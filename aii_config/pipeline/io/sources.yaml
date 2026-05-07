@@ -1,0 +1,33 @@
+# ============================================================================
+# SOURCES — Inbound channels (dashboard → pipeline)
+# ============================================================================
+# Each source is an independent localhost FastAPI listener bound to a random
+# port. The bound port is written to ``<run_dir>/sources/<name>/.port`` so the
+# dashboard can discover the worker without coordination.
+#
+# Two listeners today: ``send_message`` (hot-path prompt injection into a live
+# SDK session) and ``stop`` (cooperative shutdown — soft-stops active SDK
+# sessions, then SIGINTs the worker as a fallback). Kept on separate
+# listeners so a wedged send_message handler can't block a stop request.
+
+sources:
+  send_message:
+    # uvicorn-up wait cap during register_source().
+    startup_timeout_s: 5.0
+    # daemon-thread join cap during close().
+    shutdown_join_timeout_s: 2.0
+
+  stop:
+    startup_timeout_s: 5.0
+    shutdown_join_timeout_s: 2.0
+    # Two-phase deferred shutdown after a /stop request:
+    #   * 0 → sink_close_at_s: SDK sessions drain their partial
+    #     ResultMessage so each task gets a final ``agent_summary`` event.
+    #   * sink_close_at_s: ``run.close_sinks()`` fires — OTel force-ends
+    #     open spans + final metric export, AppSink stops accepting HTTP,
+    #     clone log flushes — so terminal state lands cleanly without
+    #     racing the SIGINT-triggered ``finally`` blocks.
+    #   * → deferred_shutdown_delay_s: buffer for any post-close cleanup
+    #     (sink shutdown threads, HTTP socket teardown) before hard SIGINT.
+    sink_close_at_s: 20.0
+    deferred_shutdown_delay_s: 60.0

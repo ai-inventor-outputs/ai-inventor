@@ -1,0 +1,78 @@
+# AII Server Configuration
+# ========================
+# Public defaults. Per-machine + private overrides go in the gitignored
+# sibling ``server.private.yaml`` (deep-merged on top at load time).
+# Secrets (API keys, OAuth, DB passwords) belong in ``.env``.
+
+server:
+  # Local-friendly defaults: debug=true so DJANGO_SECRET_KEY isn't required.
+  # Production deployments override via ``server.private.yaml``.
+  debug: true
+  host: "0.0.0.0"
+  port: 10010
+  workers: 1
+  # false = abilities-only server (open-source / local). true enables the
+  # full Django dashboard + auth + per-user runs UI; only useful on
+  # private deployments with the dashboard package installed.
+  web_app_mode: false
+  allowed_hosts:
+    - "*"
+  url_prefix: ""
+
+cors:
+  # When allow_all=true, security.frontend_url and cors.origins are both
+  # ignored — every origin is allowed. Set false in production.
+  allow_all: true
+  origins: []
+
+security:
+  csrf_trusted_origins: []
+  frontend_url: "http://localhost:3000"
+
+logging:
+  truncate_chars: 200
+
+auth:
+  email_verification: "mandatory"
+  min_password_length: 5
+  rate_limits:
+    anon: "200/min"
+    user: "600/min"
+    auth: "5/min"
+    llm: "200/min"
+    run_start: "5/min"
+
+database:
+  name: "aii_inventor"
+  user: ""
+  host: "localhost"
+  port: 5432
+
+data:
+  root_dir: ""
+
+# Email transport. ``host`` empty falls back to the dev console
+# backend (emails print to stdout). Set provider details (host, port,
+# use_tls, from_address) in ``server.private.yaml``.
+email:
+  host: ""
+  port: 587
+  use_tls: true
+  from_address: ""
+
+# Site identity — only relevant when ``server.web_app_mode`` is true.
+site:
+  name: "AI Inventor"
+  domain: "localhost"
+
+# v26 pod lifecycle — sweeper / heartbeat timings. RunPod resource ids
+# (template_id, image, network_volume_id, data_center_id) only matter
+# when the dashboard auto-provisions orchestrator pods, and live in
+# ``server.private.yaml``.
+pod_lifecycle:
+  liveness_cache_seconds: 10
+  heartbeat_interval_seconds: 60
+  sweeper_interval_seconds: 60
+  ttl_seconds: 1800
+  job_retention_seconds: 86400
+  sse_heartbeat_seconds: 15.0

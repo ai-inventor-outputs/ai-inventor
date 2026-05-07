@@ -1,0 +1,589 @@
+max_file_size_mb: 100 # GitHub hard limit — files ≥100MB are rejected by git push
+max_usd_openrouter_per_art: 10 # Hard limit per artifact on OpenRouter LLM API spend
+
+# AII research prompt — settable from CLI via ``--prompt`` (top-level field,
+# not under init). The frontend bootstrap copies aii_config/frontend/config.yaml
+# (which sets prompt to ""), so newly-bootstrapped users start with an empty
+# prompt and supply their own through the UI.
+prompt: |
+  ### Goal
+
+  Develop an operational translation pipeline that converts unstructured
+  textual content (e.g., short legal documents, news articles, kids'
+  stories) into a formal first-order logic representation. The output
+  must be capable of (probabilistic) reasoning using a logic reasoner
+  (like Prolog), leveraging LLMs to dynamically resolve terminology,
+  concepts, and relations that are not well defined in the explicit text.
+
+  ### Reviewer Scope
+
+  Limit the technical core to areas the reviewer can deeply evaluate.
+  Other fields are welcome for inspiration but should not host the
+  substantive contribution.
+
+  Reviewer-evaluable areas: semantic technologies, logic programming,
+  inductive logic programming, information retrieval, machine learning,
+  LLMs, deep learning, knowledge extraction, knowledge graphs,
+  reasoning, and text data analytics.
+
+  The pipeline should ingest a short document (approx. 3000 characters)
+  and parse it into a structured, computable format. Methods may combine
+  an LLM acting as a semantic translation engine (mapping natural text
+  to first-order logic or Prolog predicates), a running logic
+  interpreter (like SWI-Prolog) for symbolic execution, and the
+  integration of upper ontologies like OpenCyc to supply necessary
+  background structure and taxonomic grounding. Furthermore, an LLM
+  should be deployed as a probabilistic reasoning engine to handle fuzzy
+  unifications, semantic similarities, and logical gaps where strict
+  symbolic matching fails due to language ambiguity.
+
+  Evaluation must be rigorous and compare the neuro-symbolic pipeline
+  against purely neural baselines (e.g., standard RAG, chain-of-thought
+  prompting) on standard logical reasoning benchmarks (e.g., RuleTaker,
+  CLUTRR) or custom annotated datasets. It must specifically measure:
+  (i) the precision and recall of atomic fact extraction directly from
+  the original document, and (ii) the accuracy of multi-hop fact
+  extraction and logical deductions that require synthesizing explicit
+  document facts with implicit common-sense knowledge.
+
+  Outputs must provide human-auditable trace-graphs of the reasoning
+  steps to clearly demonstrate the logical path taken.
+
+  Constraints: The pipeline must be highly reproducible on any short,
+  professionally written documents. Inference must be executable on
+  commodity hardware, and the system must report a quantified reduction
+  in hallucination rates compared to raw LLM generation.
+
+  ### Publication
+
+  Target ACL Knowledge Extraction track as the primary venue, with
+  EMNLP or specialized neuro-symbolic AI conference tracks (e.g., NeSy)
+  as fallback targets.
+
+  ### Things to Avoid
+
+  Avoid simplistic propositional logic translations of the text. Avoid
+  purely neural black-box systems that lack interpretable reasoning
+  traces. The substantive contribution must be an operational, hybrid
+  method for reasoning with textual content that explicitly minimizes
+  hallucinations.
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+# AII_DATA_DIR env var overrides both run_dir and runpod_outputs_directory
+# below when set (used for volume mounts).
+init:
+  run_dir: "aii_data/runs"
+
+  pipeline:
+    # first_step / last_step: module execution range (seed_hypo, hypo_loop, invention_loop, gen_paper_repo)
+    # first_step only applies when resume is not set; resume overrides it
+    # last_step always applies — pipeline stops after this phase regardless of resume
+    first_step: "hypo_loop"
+
+    # Resume: pick up from a previous run's outputs
+    # resume_after: dotted path of last completed step (e.g. hypo_loop.1.gen_hypo, invention_loop.2.gen_plan, gen_paper_repo.viz)
+    # resume_run_id: ""
+    # resume_after: ""
+
+    last_step: "gen_paper_repo"
+
+    # Module outputs — set the dir for the step BEFORE first_step to resume.
+    # Each step needs ALL prior steps' outputs available:
+    #   first_step=hypo_loop       → needs: seed_hypo_out_dir
+    #   first_step=invention_loop  → needs: gen_hypo_out_dir (hypothesis is in gen_hypo_output.json)
+    #   first_step=gen_paper_repo  → needs: invention_loop_out_dir
+    # gen_hypo_out_dir: "aii_data/users/default/runs/<run>/2_gen_hypo"
+    # invention_loop_out_dir: "aii_data/users/default/runs/<run>/3_invention_loop"
+
+    # Gen paper repo resume options
+    # Steps: 1:gen_repo → 2a:gen_demos+2b:gen_viz+2c:deploy_gh_src → 3a:gen_full_paper+3b:deploy_gh_demos → 4a:deploy_gh_paper
+    # gen_paper_resume_dir: "aii_data/users/default/runs/<run>/4_gen_paper_repo"
+    # gen_paper_first_step: "gen_repo"  # or gen_demos, gen_viz, gen_full_paper, deploy_gh
+
+  # ── LLM-generated short summaries (one per agent / llm message) ──────────
+  # A cheap LLM produces a short headline for each agent_/llm_ message; the
+  # dashboard renders these as "what did this step do" lines.
+  llm_gen_summary:
+    enabled: true
+    min_chars: 30
+    max_chars: 65
+    max_concurrent: 10
+
+  # ── LLM-generated interim narrative summaries (long-running tasks) ───────
+  # Periodic narrative summaries describing what the pipeline is doing + what
+  # has been done. Drives the playback / overview "what's happening" line.
+  llm_gen_interim_summary:
+    enabled: true
+    min_chars: 180   # half_min = 90 per field
+    max_chars: 300   # half_max = 150 per field (schema enforces up to 250)
+    interval_s: 120  # seconds between summaries (2 min)
+
+  # ── Retry context budget (pod-failure prompt rebuild) ───────────────────
+  # When a pod retry rebuilds the prompt, the executor pulls the last N
+  # messages from the run's typed event log and truncates each to this many
+  # chars. Tuned to keep the retry prompt under context-window pressure.
+  retry_context:
+    truncate_chars: 3000
+    messages: 20
+
+# ============================================================================
+# MODULE 1: SEED_HYPO (Hypothesis Seed Generation)
+# ============================================================================
+# Steps: gen_seeds → sample_seeds. Set *_out_dir to resume from that step's output.
+seed_hypo:
+  first_step: gen_seeds # gen_seeds | sample_seeds
+  last_step: sample_seeds # gen_seeds | sample_seeds
+
+  # Invention KG pipeline (gen_seeds method)
+  # Steps: sel_topics → get_papers → clean_papers → get_triples → add_wikidata →
+  #        link_to_papers → gen_hypo_seeds → gen_hypo_prompt → gen_graphs
+  invention_kg:
+    first_step: add_wikidata # kg step to start from
+    last_step: gen_graphs # kg step to end at
+
+    # Resume dirs (set the one BEFORE first_step)
+    # sel_topics_out_dir: ""
+    # get_papers_out_dir: ""
+    # clean_papers_out_dir: ""
+    # get_triples_out_dir: "/path/to/runs/<run_name>/1_seed_hypo/_4_triples"
+    # add_wikidata_out_dir: ""
+    # link_to_papers_out_dir: "/path/to/runs/<run_name>/1_seed_hypo/_6_paper_triples"
+    # gen_hypo_seeds_out_dir: ""
+    # gen_hypo_prompt_out_dir: ""
+
+    sel_topics:
+      topics:
+        - "Data Mining Algorithms and Applications"
+        - "Opinion Dynamics and Social Influence"
+        - "Multi-Agent Systems and Negotiation"
+        - "Formal Methods in Verification"
+        - "Distributed Control Multi-Agent Systems"
+        - "Reinforcement Learning in Robotics"
+        - "Evolutionary Game Theory and Cooperation"
+        - "Speech and dialogue systems"
+
+    get_papers:
+      # email: set RESEARCHER_EMAIL in .env (used for OpenAlex API polite pool)
+      papers_per_year: 10
+      year_range: { start: 2020, end: 2025 }
+      sort_by: "cited_by_count" # cited_by_count | publication_date | relevance_score
+
+    get_triples:
+      max_papers: 3 # Total papers to process (-1 = all)
+      stagger_delay: 2 # Seconds between starting each agent
+      url_verification_retries: 2 # Retries for Wikipedia URL verification
+      min_valid_urls: 0 # Min valid URLs before restructuring vs searching again (0 = always search)
+      claude_agent:
+        model: claude-sonnet-4-6
+        effort: high
+        agent_timeout: 2400 # Total timeout for entire agent (null = no limit)
+        disallowed_tools: ["Task", "WebSearch", "WebFetch"]
+    gen_hypo_seeds:
+      blind_spots:
+        min_shared_concepts: 1 # Min shared concepts between topics
+        max_similarity: 1.0 # Max Jaccard similarity (1.0 = no filter)
+        entity_types: [method, concept] # method | concept | task | tool | artifact | data | other
+
+    gen_graph:
+      temporal_windows: [[2018, 2020], [2021, 2023], [2024, 2025]]
+
+  # Sampling config (sample_seeds step)
+  sampling:
+    sel_topics: auto # auto (BM25 match) or ["Topic A", "Topic B"]
+    aii_prompt_topic_match_k: 1 # topics to match via BM25
+    seed_sampling_pool: 20 # top N seeds per topic
+    topics_per_agent: 2 # topics per agent (round-robin)
+    seeds_per_topic: 1 # seeds per topic per agent
+
+# ============================================================================
+# MODULE 2: GEN_HYPO_LOOP (Hypothesis Generation + Review Loop)
+# ============================================================================
+# The Loop: gen_hypo → review_hypo, repeated for ``max_iterations`` cycles
+# Flow: seed_hypo → gen_hypo_loop → invention_loop → gen_paper_repo
+gen_hypo_loop:
+  max_iterations: 1 # Number of gen_hypo → review_hypo cycles
+
+  # --- Step 2.1: GEN_HYPO (Hypothesis Generation) ---
+  # Tools: aii_web_tools__search (Serper API), aii_web_tools__fetch (aiohttp)
+  # Total hypotheses = (seeded + unseeded) × num_models
+  gen_hypo:
+    seeded_hypos_per_llm: 0 # Hypotheses with inspiration seeds from prep_context
+    unseeded_hypos_per_llm: 1 # Hypotheses without seeds (open generation)
+
+    claude_agent:
+      agent_timeout: 7200 # 120 min for entire agent
+
+  # --- Step 2.2: REVIEW_HYPO (Adversarial Hypothesis Review) ---
+  # Different LLM reviews hypothesis adversarially after gen_hypo.
+  # Single pass per call; feedback feeds the next gen_hypo iteration.
+  review_hypo:
+    enabled: true
+    claude_agent:
+      agent_timeout: 7200 # 120 min
+      model: claude-sonnet-4-6
+
+# MODULE 3: INVENTION LOOP (Iterative Scientific Invention)
+# ============================================================================
+# The Loop: GEN_STRAT → GEN_PLAN → GEN_ART → GEN_PAPER_TEXT → REVIEW_PAPER → UPD_HYPO → loop
+# Three Pools: PlanPool, ArtifactPool, PaperTextPool
+invention_loop:
+  max_iterations: 1
+
+  # test_all_artifacts: true # Testing mode: propose creates exactly 1 of each creatable type, rank_prop accepts all
+
+  # Allowed artifact types to execute (for testing individual executors)
+  # Empty list or omit = all types allowed
+  # Options: research, experiment, dataset, evaluation, proof
+  allowed_artifacts:
+    - research
+    - experiment
+    - dataset
+    - evaluation
+    - proof
+
+  # --- Step 3.1: GEN_STRAT (Multi-LLM strategy generation) ---
+  gen_strat:
+    calls_per_llm: 1 # Parallel calls per model (total tasks = calls_per_llm × num_models)
+    strats_per_call: 1 # Strategies generated per LLM call
+    art_limit: 5 # Max artifact directions per strategy (= artifacts per iteration)
+    artifact_context_per_type: 10 # Max artifacts shown per type in LLM prompt context
+
+    # Artifact verification settings - verify strategies before accepting
+    # Similar to verify_citations in audit_hypo, retries with feedback if invalid
+    verify_artifacts:
+      retry: 5 # Number of retry attempts if validation fails (sends failure details back to LLM)
+      # Minimum valid artifacts required PER LLM CALL (not per strategy, not cumulative across all LLMs)
+      # If strats_per_call=2, this checks across both strategies from that single call
+      min_valid_artifacts: 1
+
+    claude_agent:
+      agent_timeout: 3600
+      model: claude-sonnet-4-6
+  # Gen_plan takes artifact_directions from ALL strategies and elaborates each into plans
+  # Total plans = total_artifact_directions_across_strats × num_models × plans_per_strat
+  gen_plan:
+    plans_per_strat: 1 # Plans per (artifact_direction, llm) combination
+    claude_agent:
+      agent_timeout: 3600 # 60 min
+      disallowed_tools: ["Task", "Bash"]
+  # GEN_ART executes all artifact types in parallel:
+  #   RESEARCH → research.py (research questions via web search)
+  #   DATASET  → dataset.py  (HuggingFace/OWID data acquisition)
+  #   EXPERIMENT → experiment.py (methodology implementation)
+  #   EVALUATION → evaluation.py (experiment result assessment)
+  #   PROOF    → proof.py    (Lean 4 formal verification)
+  # All plans run together (e.g., 2 research + 1 experiment + 2 datasets at once).
+  execute:
+    # RESEARCH sub-module: OpenRouter with research_workflow (web search) or Claude agent
+    research:
+      model: gpt-5-mini
+      reasoning_effort: high
+      max_tool_iterations: 10 # Max web search/fetch cycles before forcing output
+      llm_timeout: 300
+      verify_retries: 2 # Retries for missing expected files
+      schema_retries: 3 # Retries for schema validation errors
+      claude_agent:
+        pod_timeout: 14400 # 240 min pod lifetime
+        agent_timeout: 10800 # 180 min
+    dataset:
+      verify_retries: 2 # Retries for missing expected files
+      schema_retries: 3 # Retries for schema validation errors
+      min_examples: 50 # Min examples in full_data_out.json
+      dataset_max_size: "300MB" # Max dataset size (shown in prompt, e.g. "300MB", "1GB")
+      dataset_search_tool_cap: 50 # Max keyword searches in TODO 1
+      dataset_chosen_for_preview_cap: 25 # Max datasets chosen for preview in TODO 2
+      dataset_chosen_for_download_cap: 15 # Max datasets chosen for download in TODO 3
+      dataset_chosen_final_cap: 10 # Max final datasets (caps plan's target_num_datasets)
+      claude_agent:
+        pod_timeout: 25200 # 7 hours pod lifetime
+        agent_timeout: 21600 # 6 hours
+        model: claude-sonnet-4-6 # Heavy compute artifact — kept on Sonnet even in Lite
+        effort: high
+    experiment:
+      verify_retries: 2 # Retries for missing expected files
+      schema_retries: 3 # Retries for schema validation errors
+      min_examples: 50 # Min examples in full_experiment_out.json
+      claude_agent:
+        pod_timeout: 25200 # 7 hours pod lifetime
+        agent_timeout: 21600 # 6 hours
+        model: claude-sonnet-4-6 # Heavy compute artifact — kept on Sonnet even in Lite
+        effort: high
+    evaluation:
+      verify_retries: 2
+      schema_retries: 3
+      min_examples: 50 # Min examples in full_eval_out.json
+      claude_agent:
+        pod_timeout: 14400 # 240 min pod lifetime
+        agent_timeout: 10800 # 180 min
+        model: claude-sonnet-4-6 # Heavy compute artifact — kept on Sonnet even in Lite
+        effort: high
+    proof:
+      verify_retries: 2
+      schema_retries: 3
+      claude_agent:
+        pod_timeout: 14400 # 240 min pod lifetime
+        agent_timeout: 10800 # 180 min
+        model: claude-sonnet-4-6 # Heavy compute artifact — kept on Sonnet even in Lite
+        effort: high
+  # --- Step 3.4: GEN_PAPER_TEXT (Paper draft generation per iteration) ---
+  # Replaces gen_narr — produces actual paper drafts with figure placeholders.
+  # Claude-agent-only (needs tool access for reading artifacts, web search).
+  gen_paper_text:
+    start_at_iteration: 1 # First paper draft at iteration 1
+    verify_retries: 2 # Figure marker verification retries
+    claude_agent:
+      agent_timeout: 10800 # 180 min
+      model: claude-sonnet-4-6
+
+  # --- Step 3.5b: UPD_HYPO (Internal hypothesis revision) ---
+  # "What do we now believe?" — revises hypothesis based on evidence.
+  # Same LLM (internal reflection, not adversarial). Starts at iter 3.
+  upd_hypo:
+    start_at_iteration: 1
+    claude_agent:
+      agent_timeout: 7200 # 120 min
+      model: claude-sonnet-4-6
+
+  # --- Step 3.5a: REVIEW_PAPER (External adversarial review) ---
+  # "Fresh eyes on the paper" — DIFFERENT LLM reviews paper draft.
+  # Runs in parallel with upd_hypo. Output: actionable critiques.
+  review_paper:
+    start_at_iteration: 1
+    claude_agent:
+      agent_timeout: 7200 # 120 min
+      model: claude-sonnet-4-6 # Lite override — review benefits from Sonnet
+      effort: high
+  # Stops the loop early if narrative quality plateaus.
+  # Uses two signals - stops when BOTH indicate no improvement for `patience` iterations.
+  # early_stopping:
+  #   patience: 2 # Wait N iterations before checking convergence
+  #   # Signal 1: Average BT score of all narratives isn't improving
+  #   # If avg BT score hasn't increased for `patience` iterations, signals plateau
+  #   check_average_bt_score: true
+  #   # Signal 2: Best narrative isn't from recent iterations
+  #   # If the globally top-ranked narrative is old (not from last 3 iterations), signals plateau
+  #   check_top_origin: true
+
+# ============================================================================
+# MODULE 4: GEN_PAPER_REPO (Paper + Repository Generation)
+# ============================================================================
+# SEQUENTIAL EXECUTION (with concurrent sub-steps via asyncio.gather):
+#   Step 1:  gen_repo                             (resolve URL + clone repo)
+#   Step 2a: gen_art_demo        ─┐
+#   Step 2b: gen_viz             ─┤ concurrent
+#   Step 2c: deploy_gh_src       ─┘
+#   Step 3a: gen_full_paper      ─┐ concurrent
+#   Step 3b: deploy_gh_demos     ─┘
+#   Step 4a: deploy_gh_paper           (sequential)
+#
+# Paper text comes from invention loop's gen_paper_text step (PaperTextPool).
+gen_paper_repo:
+  # =========================================================================
+  # GitHub identity for paper-repo creation + commits.
+  #
+  # Personal values (real account name / email) live in
+  # ``pipeline.private.yaml`` — only safe defaults here. The token
+  # (``AII_GH_TOKEN``) lives in ``.env``. The repo OWNER auto-resolves
+  # from that token via ``gh api user``, so no username field needed.
+  #
+  # Per-clone ``git config`` — never ``--global`` — so commits in the
+  # generated repos use these values without polluting the developer's
+  # global git identity.
+  # =========================================================================
+  github:
+    commit_author_name: "AI Inventor"
+    commit_author_email: "ai-inventor@noreply"
+    repo_prefix: "ai-invention"
+
+  # =========================================================================
+  # gen_repo (Resolve GitHub repository URL — quick, no LLM) — step 1 in gen_paper_repo
+  # =========================================================================
+  gen_repo:
+    enabled: true
+
+  # =========================================================================
+  # gen_demos (Generate demo notebooks/scripts) — step 3 in gen_paper_repo
+  # =========================================================================
+  gen_art_demo:
+    enabled: true
+    max_notebook_total_runtime: 600 # Max seconds for notebook execution via nbconvert
+    claude_agent:
+      runpod_compute_profile: cpu_light
+      pod_timeout: 14400 # 240 min pod lifetime
+      agent_timeout: 10800 # 180 min
+
+  # =========================================================================
+  # gen_viz (Generate figures from paper's placeholders) — step 2 in gen_paper_repo
+  # =========================================================================
+  # One figure per placeholder, no variations, no ranking.
+  # Two backends:
+  #   use_claude_agent=true  → Claude agent with aii-image-gen skill (Gemini 3 Pro Image, recommended)
+  #   use_claude_agent=false → Direct Gemini image gen via OpenRouter (free_viz)
+  viz_gen:
+    free_viz:
+      max_concurrent: 10
+      image_size: "2K"
+      models:
+        - model: google/gemini-3-pro-image-preview
+          llm_timeout: 240
+    use_claude_agent: true
+    claude_agent:
+      max_concurrent_agents: 5
+      max_turns: 20
+      runpod_compute_profile: cpu_light
+      pod_timeout: 9600 # 160 min pod lifetime
+      agent_timeout: 7200 # 120 min
+
+  # =========================================================================
+  # gen_full_paper (Combine paper + figures → LaTeX/PDF) — step 4 in gen_paper_repo
+  # =========================================================================
+  gen_full_paper:
+    claude_agent:
+      agent_timeout: 7200 # 120 min
+
+  # =========================================================================
+  # deploy_gh (clone + push src + push demos + push paper) — step 5 in gen_paper_repo
+  # =========================================================================
+  deploy_gh:
+    enabled: true # Set to false to skip all GitHub deployment
+    chunk_max_mb: 1000 # Max MB per git push chunk
+    push_timeout: 1200 # Seconds per push attempt
+    min_push_interval: 2 # Seconds between consecutive pushes
+
+
+# ============================================================================
+# OPTIONAL MODULES (LLM-as-judge, disabled by default)
+# ============================================================================
+# These modules use LLM pairwise comparison tournaments for ranking.
+# To re-enable, uncomment the relevant section and add the step back to the
+# pipeline sequence in init.pipeline.
+#
+# audit_hypo:
+#   max_concurrent_audits: 30
+#   verify_citations:
+#     parallel_fetch: false
+#     retry: 3
+#     min_valid_citations: 3
+#   novelty:
+#     num_positive_per_llm: 1
+#     num_negative_per_llm: 1
+#     cap_mode: equal
+#     llm_client:
+#       client: openrouter
+#       llm_timeout: 120
+#       suffix: nitro
+#       models:
+#         - model: openai/gpt-5-mini
+#           reasoning_effort: high
+#           max_tool_iterations: 30
+#   feasibility:
+#     num_positive_per_llm: 1
+#     num_negative_per_llm: 1
+#     cap_mode: equal
+#     llm_client:
+#       client: openrouter
+#       suffix: nitro
+#       llm_timeout: 120
+#       models:
+#         - model: openai/gpt-5-mini
+#           reasoning_effort: high
+#
+# rank_hypo:
+#   max_rounds: 3
+#   bootstrap_opponents_per_hypo: 2
+#   early_stop_win_prob: 0.80
+#   swap_test_per_pair_per_llm: true
+#   votes_per_pair_per_llm: 1
+#   include_justification: true
+#   llm_client:
+#     client: openrouter
+#     llm_timeout: 120
+#     models:
+#       - model: anthropic/claude-sonnet-4.5
+#         reasoning_effort: high
+#         suffix: nitro
+#       - model: openai/gpt-5.2
+#         reasoning_effort: high
+#         suffix: nitro
+#
+# rank_strat (inside invention_loop):
+#   max_rounds: 3
+#   bootstrap_opponents_per_strat: 2
+#   votes_per_pair_per_llm: 1
+#   early_stop_win_prob: 0.80
+#   swap_test_per_pair_per_llm: true
+#   include_justification: true
+#   llm_client:
+#     client: openrouter
+#     llm_timeout: 120
+#     models:
+#       - model: anthropic/claude-sonnet-4.5
+#         reasoning_effort: high
+#         suffix: nitro
+#       - model: openai/gpt-5.2
+#         reasoning_effort: high
+#         suffix: nitro
+#
+# rank_plan (inside invention_loop):
+#   max_rounds: 3
+#   bootstrap_opponents_per_item: 2
+#   votes_per_pair_per_llm: 1
+#   early_stop_win_prob: 0.80
+#   swap_test_per_pair_per_llm: true
+#   include_justification: true
+#   llm_client:
+#     client: openrouter
+#     llm_timeout: 120
+#     models:
+#       - model: anthropic/claude-sonnet-4.5
+#         reasoning_effort: high
+#         suffix: nitro
+#       - model: openai/gpt-5.2
+#         reasoning_effort: high
+#         suffix: nitro
+#
+# rank_narr (inside invention_loop):
+#   max_rounds: 3
+#   bootstrap_opponents_per_item: 2
+#   votes_per_pair_per_llm: 1
+#   early_stop_win_prob: 0.80
+#   swap_test_per_pair_per_llm: true
+#   include_justification: true
+#   llm_client:
+#     client: openrouter
+#     llm_timeout: 120
+#     models:
+#       - model: openai/gpt-5-mini
+#         reasoning_effort: medium
+#         suffix: nitro
+#       - model: x-ai/grok-4.1-fast
+#         reasoning_effort: medium
+#         suffix: nitro
+#       - model: google/gemini-3-flash-preview
+#         reasoning_effort: medium
+#         suffix: nitro
+#
+# rank_paper_text (inside gen_paper_repo):
+#   num_winners: 1
+#   max_rounds: 4
+#   bootstrap_opponents_per_item: 2
+#   votes_per_pair_per_llm: 4
+#   early_stop_win_prob: 0.80
+#   swap_test_per_pair_per_llm: true
+#   include_justification: true
+#   llm_client:
+#     client: openrouter
+#     llm_timeout: 120
+#     models:
+#       - model: openai/gpt-5-mini
+#         reasoning_effort: medium
+#         suffix: nitro
+#       - model: x-ai/grok-4.1-fast
+#         reasoning_effort: medium
+#         suffix: nitro
+
+# claude_agent defaults live in aii_config/pipeline/harness/<name>.yaml under
+# ``agent_backend.claude_agent_sdk.defaults`` — that is the sole source for
+# shared Claude-agent defaults. This file used to duplicate that block;
+# keeping it in one place makes overrides less surprising.

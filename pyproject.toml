@@ -1,0 +1,544 @@
+[project]
+name = "ai-inventor"
+version = "0.1.0"
+description = "Autonomous AI research pipeline that generates novel hypotheses, designs experiments, and writes papers — driven by Claude."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    # ``ability-server`` extra brings nodriver/opencv/browser-cookie3/PyMuPDF/
+    # html2text — needed by the abilities the server hosts (autologin OAuth
+    # via nodriver, PDF parsing, cookie extraction). Without the extra, a
+    # bare ``uv sync`` purges them and autologin crashes at import.
+    "aii_lib[ability-server]",
+    "aii_pipeline",
+    "aii_server",
+    "aii_launcher",
+]
+
+# Optional extras. Install with ``uv sync --extra runpod`` (or
+# ``pip install -e ".[runpod]"``). Public/open-source builds don't
+# ship the ``aii_runpod`` package at all — the workspace member list
+# below excludes it, the sources entry below is conditional on the
+# extra being requested, and the public sync script's allowlist
+# leaves ``aii_runpod/`` out of the staging clone entirely.
+# uv workspace: every sub-package is a member, and the meta-package above
+# pulls all four in. ``uv sync`` from the repo root installs everything
+# in editable mode without listing each path on the command line.
+# ``aii_runpod`` is intentionally *not* a workspace member — it's a
+# private optional extra resolved via path-source below. The public
+# repo doesn't ship that directory; without ``--extra runpod`` uv
+# never tries to resolve it.
+[tool.uv.workspace]
+members = ["aii_lib", "aii_pipeline", "aii_server", "aii_launcher"]
+
+[tool.uv.sources]
+aii_lib = { workspace = true }
+aii_pipeline = { workspace = true }
+aii_server = { workspace = true }
+aii_launcher = { workspace = true }
+
+# PEP 735 — dev tooling pulled in by ``uv sync --group dev``. Default
+# ``uv sync`` keeps the venv minimal; CI / contributors opt in to tests.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.0",
+    "pydantic-to-typescript>=2.0",
+    "pre-commit>=3.5",
+    "ty>=0.0.34",
+]
+
+# ---- Ruff (lint + format) ---------------------------------------------------
+# Run via lefthook (lefthook.yml) or directly: ``ruff check``.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    # Anthropic-published skills (anthropic-pdf, anthropic-xlsx, etc.) +
+    # archived/ — third-party code, not ours to police. Your own ``aii-*`` /
+    # ``amg-*`` skills under .claude/skills/ remain linted.
+    ".claude/skills/anthropic-*",
+    ".claude/skills/archived",
+    # invention_kg generated outputs — per-paper ``agent_cwd/*.py`` files
+    # produced by the LLM during ``_4_triples`` extraction. Hundreds of
+    # files of LLM-generated code style we don't dictate. Linting them
+    # bloated ruff with ~11k pre-existing errors that drowned out
+    # signal on actual source. Same rationale as the anthropic skills
+    # exclude above.
+    "aii_pipeline/src/aii_pipeline/steps/_1_seed_hypo/invention_kg/data/**",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes — unused imports, undefined names
+    "I",     # isort
+    "B",     # flake8-bugbear — real bugs (mutable defaults, etc.)
+    "C4",    # flake8-comprehensions
+    "UP",    # pyupgrade — modernize for py312
+    "SIM",   # flake8-simplify
+    "PIE",   # flake8-pie — misc cleanups
+    "RUF",   # ruff-native (RUF100 cleans dead `# noqa`)
+    "ASYNC", # async-specific bugs
+    "ARG",   # unused function arguments — real dead-code signal
+    "DJ",    # Django-specific lints
+    "PERF",  # perflint — anti-patterns (try/except in loops, etc.)
+    "TC",    # flake8-type-checking — move type-only imports under TYPE_CHECKING
+    "PT",    # flake8-pytest-style
+    "FAST",  # flake8-fastapi (3 rules, quick wins for run/sources/*)
+    "TRY",   # tryceratops — exception-handling patterns
+    "PGH",   # pygrep-hooks — noqa / type:ignore discipline
+    "S",     # bandit — security (eval, subprocess shell=True, etc.)
+    "T20",   # banned print() (use logger)
+    "D",     # pydocstyle — docstring conventions
+    "ANN",   # flake8-annotations — type annotations
+    # ── Step 5: research-backed additions (Mozilla / langchain / HN consensus) ──
+    "PLE",   # Pylint errors — every rule is a real bug (await-outside-async, etc.)
+    "PLW",   # Pylint warnings — global misuse, useless-with-lock, missing-encoding
+    "LOG",   # flake8-logging — exception()-outside-except, deprecated WARN
+    "G",     # flake8-logging-format — extra-key clash, deprecated warn()
+    "A",     # flake8-builtins — shadowing list/id/email module name
+    "YTT",   # flake8-2020 — future-proof Python version checks
+    "DTZ",   # flake8-datetimez — tz-aware datetime correctness
+    "RET",   # flake8-return — implicit return, redundant else after return/raise
+    "RSE",   # flake8-raise — `raise Exception()` → `raise Exception`
+    "SLOT",  # flake8-slots — __slots__ on str/tuple/NamedTuple subclasses
+]
+ignore = [
+    "E501",     # line length — ruff format handles wrapping
+    "B008",     # function call in default — Pydantic Field / FastAPI Depends pattern
+    "ASYNC109", # `async def f(timeout=...)` — stable API surface; refactoring to
+                # asyncio.wait_for would force every caller to change.
+    # Stylistic — kept off to avoid noise. Re-enable individually if desired.
+    "RUF001",   # ambiguous unicode in strings — false positives on math/sci copy (×, α)
+    "RUF002",   # ambiguous unicode in docstrings — same
+    "RUF003",   # ambiguous unicode in comments — same
+    "RUF022",   # unsorted __all__ — declarations are grouped logically, not alphabetically
+    "SIM102",   # collapsible if — nested form often documents preconditions better
+    "SIM105",   # `try/except: pass` — debate; the explicit form is fine
+    "SIM108",   # if/else → ternary — readability varies with branch complexity
+    "SIM115",   # open without context manager — persistent file handles in sinks
+                # and exporters are intentional, not leaks
+    "SIM117",   # nested `with` — separate forms read more clearly in tests
+    "B017",     # `assert raises Exception` — fine in tests for type-agnostic checks
+    "PERF401",  # manual `list.append` loop — stylistic; comprehensions aren't always
+                # clearer when the loop body has continues/early-exits.
+    "PERF403",  # manual `dict[k] = v` — same; dict-comprehension isn't always better.
+    # ── TRY (tryceratops) ─────────────────────────────────────────────────
+    "TRY003",   # long inline exception messages — every `raise X(f"...")` would flag
+    "TRY300",   # "move return to else block" — over-prescriptive
+    "TRY301",   # "abstract raise to inner function" — over-prescriptive refactor
+    "TRY401",   # f-string includes exception var — sometimes useful for log context
+    # ── PT (pytest) ───────────────────────────────────────────────────────
+    "PT011",   # `pytest.raises(Exception)` too broad — many tests legitimately do
+    # ── S (bandit) — only globally ignore the truly universal cases ───────
+    "S101",     # assert used — pytest relies on assert
+    "S107",     # password in default-arg — high FP rate on dunder defaults
+    "S301",     # pickle — sometimes legitimate (LLM output caching, etc.)
+    "S311",     # ``random`` not crypto-safe — fine for non-security sampling
+    "S404",     # subprocess import — unavoidable; ASYNC catches the actual blocking
+    "S603",     # subprocess without shell=True — usually fine
+    # S105, S106 (hardcoded password) → narrowed to per-file ignores
+    # S108 (hardcoded /tmp) → narrowed to per-file ignores
+    # S110, S112 (except-pass/continue) → narrowed; real bug class
+    # S310 (urlopen) → narrowed to per-file
+    # S607 (subprocess partial path) → narrowed to per-file
+    # ── D (pydocstyle) ────────────────────────────────────────────────────
+    # Conflict-pairs (must pick one of each):
+    "D203",     # 1 blank line before class docstring (we use D211 — no blank line)
+    "D213",     # multi-line summary on second line (we use D212 — first line)
+    # Stylistic preferences kept off:
+    "D105",     # magic methods rarely need docstrings
+    "D106",     # nested class — typed config dicts don't need docstrings
+    "D107",     # __init__ — class docstring covers it
+    "D401",     # imperative mood — would require rewording every descriptive doc
+    "D404",     # don't start with "This" — too prescriptive
+    "D415",     # trailing punctuation on first line — many one-liners legitimately don't
+    "D400",     # missing trailing period — existing docs use ? / : legitimately
+                # (questions, colons introducing lists). Forcing . hurts prose.
+    # ── ANN ───────────────────────────────────────────────────────────────
+    "ANN002",   # *args annotation — typing variadics is awkward and low-value
+    "ANN003",   # **kwargs annotation — same
+    "ANN401",   # banning ``Any`` — sometimes the right type
+    # ── Step 5 ignores ────────────────────────────────────────────────────
+    "G004",     # f-string in logger — loguru is f-string-native; rule N/A
+    "RET504",   # assign-then-return — high FP rate on conditional builders
+    "PLW2901",  # loop-var rebound — common sanitize pattern in pipeline code
+    "DTZ001",   # naked datetime() literal — fine for legitimate naive use cases
+                # in tests + status-message text (where "now" is human-display only)
+    "PLW0602",  # global-variable-not-assigned — codebase uses module-level
+    "PLW0603",  # global-statement — singletons (``_run_end_emitted``,
+                # ``_discovered``, ``_DB_BOOTSTRAPPED``) heavily; pattern is
+                # intentional, not a bug class.
+    "PLW1510",  # subprocess.run without check= — codebase consistently
+                # inspects ``.returncode`` manually for graceful-failure
+                # paths (autologin, gh_auth, tmux, repo_ops, codegen).
+                # Switching to ``check=True`` would force every call site
+                # into try/except for already-handled cases.
+    # ── PGH ──
+    # PGH003 (type:ignore without code) is good — keep it active.
+    # PGH004 (noqa without code) is good — keep it active.
+]
+
+# ---- ty (type checker, Astral) ─────────────────────────────────────────────
+# ty is the Astral-built Rust type checker (sibling to ruff/uv). Pre-1.0 but
+# fast and getting closer to mypy/pyright behaviour each release. Run via
+# ``uvx ty check`` or the lefthook ``ty`` hook (lefthook.yml).
+# Replaces pyrefly — rule names below are the ty equivalents of our prior
+# pyrefly suppressions (e.g. pyrefly ``bad-argument-type`` → ty
+# ``invalid-argument-type``); see ``uvx ty explain rule <name>`` for details.
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+# Mirror ruff's exclude. Your own ``aii-*`` / ``amg-*`` skills DO get
+# type-checked.
+exclude = [
+    # Anthropic-published skills (anthropic-pdf, anthropic-xlsx, etc.) +
+    # archived/ — third-party code, not ours to police.
+    ".claude/skills/anthropic-*/**",
+    ".claude/skills/archived/**",
+    # Research papers / experiments — throwaway code with bespoke deps.
+    "resources/**",
+    # Eval scaffolding — same.
+    "aii_eval/**",
+    # Standard noise.
+    "**/.venv/**",
+    "**/__pycache__/**",
+    "**/build/**",
+    "**/dist/**",
+]
+
+[tool.ty.rules]
+# Stub-coverage gaps + cross-package import resolution issues — ty can't
+# always follow our workspace layout (aii_lib + aii_pipeline + aii_server
+# resolved as separate uv workspace members).
+unresolved-import = "ignore"
+possibly-missing-submodule = "ignore"   # re-exports through __init__.py
+# Polymorphic LLM responses + Pydantic discriminator unions — ty can't
+# narrow these without TypeVar/Protocol scaffolding we don't have.
+unresolved-attribute = "ignore"
+possibly-missing-attribute = "ignore"
+# Adapter signatures use ``object`` / ``Any`` heavily for callbacks &
+# response objects (callback args to tenacity, etc.).
+call-non-callable = "ignore"
+invalid-argument-type = "ignore"
+# Same family — Pydantic ``__init__`` accepts arbitrary fields via ``**kwargs``
+# / model_config; ty can't see them and flags every ``Model(field=x)`` call.
+unknown-argument = "ignore"
+# Pydantic dict-build patterns: ``kwargs: dict = {}; if cond: kwargs["x"] =
+# y`` — ty narrows the dict's value-type from the literal init.
+invalid-assignment = "ignore"
+# Heavy override of ``object`` / ``Any`` in adapters; same root cause.
+unsupported-operator = "ignore"
+
+# Django ORM / admin metaclass magic that ty can't model:
+# - ModelAdmin.list_display / search_fields / raw_id_fields are typed as
+#   ``tuple`` upstream but Django docs use ``list`` everywhere
+# - AppConfig.default_auto_field — Django assigns a string at runtime
+# - models.CharField is the descriptor; ``self.id`` returns ``str`` at
+#   runtime via Django's metaclass magic
+[[tool.ty.overrides]]
+include = ["aii_server/dashboard/admin.py", "aii_server/dashboard/apps.py"]
+[tool.ty.overrides.rules]
+invalid-attribute-override = "ignore"
+
+[[tool.ty.overrides]]
+include = ["aii_server/dashboard/models.py"]
+[tool.ty.overrides.rules]
+invalid-return-type = "ignore"   # Django CharField.__get__ returns str at runtime
+
+# Tests use ``object``-typed fakes & dynamic attribute access freely.
+[[tool.ty.overrides]]
+include = ["tests/**"]
+[tool.ty.overrides.rules]
+invalid-key = "ignore"
+
+# JSON-validation / dataset-preview code runs on dynamically-typed
+# JSON loaded from disk — heterogeneous dicts trigger ``not-iterable``
+# and ``no-matching-overload`` on every ``.get`` / iteration. Validating
+# that data IS the purpose of these files; ty's narrowing fights the
+# dynamic-by-design pattern.
+[[tool.ty.overrides]]
+include = [
+    "aii_pipeline/src/aii_pipeline/prompts/steps/_3_invention_loop/_3_gen_art/dataset/out_schema.py",
+    "aii_pipeline/src/aii_pipeline/prompts/steps/_3_invention_loop/_3_gen_art/evaluation/out_schema.py",
+    "aii_pipeline/src/aii_pipeline/prompts/steps/_3_invention_loop/_3_gen_art/experiment/out_schema.py",
+    ".claude/skills/aii-json/scripts/aii_json_validate_schema.py",
+    ".claude/skills/aii-hf-datasets/scripts/aii_hf_preview_datasets.py",
+]
+[tool.ty.overrides.rules]
+not-iterable = "ignore"
+no-matching-overload = "ignore"
+
+[tool.ruff.lint.pydocstyle]
+# Use PEP 257 — closest to the existing free-form docstrings in the codebase.
+convention = "pep257"
+
+[tool.ruff.lint.flake8-annotations]
+suppress-dummy-args = true       # don't require type for ``_`` / ``_arg``
+suppress-none-returning = true   # don't require ``-> None`` on void functions
+
+[tool.ruff.lint.flake8-type-checking]
+# Pydantic + pydantic-ninja resolve type hints AT RUNTIME (model validation
+# inspects __annotations__), so types referencing these classes must stay
+# imported at module top — moving them under TYPE_CHECKING breaks resolution.
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+    "pydantic.RootModel",
+    # Project-internal Pydantic bases — ruff doesn't follow the inheritance
+    # chain to BaseModel for these, so it'd otherwise propose moving field-type
+    # imports under TYPE_CHECKING and break model_rebuild() at import.
+    "aii_lib.run.node.AIINode",
+    "aii_lib.run.messages.BaseMessage",
+]
+runtime-evaluated-decorators = [
+    "pydantic.validate_call",
+    "dataclasses.dataclass",
+    "attrs.define",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-exports and lazy-imports are the whole point of __init__.py.
+"**/__init__.py" = ["F401", "F403", "E402"]
+# Star-import the Pydantic config models on purpose — explicit list would
+# duplicate the source-of-truth in config_models.py.
+"aii_pipeline/src/aii_pipeline/utils/pipeline_config.py" = ["F405"]
+# Re-export hub for the agent_backend public API; declared via __init__.
+"aii_lib/src/aii_lib/agent_backend/claude_agent_sdk/utils/init_helpers/agents.py" = ["F401"]
+# Pipeline step modules with helper-function-then-late-imports layout.
+# Imports come AFTER ``make_artifact`` / ``ARTIFACT_SCHEMAS`` to keep
+# related code colocated; rearranging would scatter the schema mappings.
+"aii_pipeline/src/aii_pipeline/steps/_3_invention_loop/_3_gen_art.py" = ["E402"]
+"aii_pipeline/src/aii_pipeline/steps/_4_gen_paper_repo/_3_gen_art_demo.py" = ["E402"]
+# Skill scripts run as standalone CLIs that load their own .env BEFORE
+# importing aii_lib (so secrets are present at import time). The
+# load_dotenv → import order is intentional, not an oversight.
+# Server bootstrap files configure Django/env before importing the app.
+"aii_server/config/settings.py" = ["E402"]
+"aii_server/dashboard/api/run_fork.py" = ["E402"]
+# LLM client modules: load env before importing the SDK.
+"aii_lib/src/aii_lib/llm_backend/**/*.py" = ["E402", "ARG001", "ARG002"]
+"aii_lib/src/aii_lib/abilities/ability_server/ability_client.py" = ["E402"]
+"aii_lib/src/aii_lib/server_url.py" = ["E402"]
+# Tests + research scripts: standalone runners that load env first.
+# Tests use mutable class defaults (RUF012) for fixture data, unused loop
+# vars (B007) for parametrized iteration, and `assert raises Exception`
+# (B017) idioms — none of which are bugs in test context. Tests can also
+# block on disk I/O (ASYNC230/240) and have unused fixture/mock args (ARG)
+# without consequence.
+"tests/**/*.py" = [
+    "E402", "RUF012", "B007", "B017", "B023",
+    "ASYNC230", "ASYNC240",
+    "ARG001", "ARG002", "ARG005",
+    "PERF401", "PERF403",
+    # Tests freely use print(), assert, broad raises, and don't need docstrings.
+    "T201", "T203",
+    "S102", "S104", "S105", "S106", "S108", "S110", "S112",
+    "S307", "S308", "S324", "S501", "S506", "S701",
+    "PT012", "PT015", "PT017", "PT018", "PT022",
+    "D200", "D205", "D400",
+    "TRY002", "TRY004", "TRY200", "TRY201", "TRY400",
+    # Step 5 additions — tests use Mock/lambda-as-callable extensively.
+    "PLW0108",  # `Mock(side_effect=lambda x: x)` is intentional, not unnecessary
+    "A002",     # ``id`` as fixture/test arg name is a common idiom
+]
+"resources/**/*.py" = [
+    "E402", "F841",
+    # Research scripts: blocking I/O is fine (run-once), and SIM/RUF style
+    # rules add noise without value in throwaway pipeline scripts.
+    "ASYNC230", "ASYNC240", "ASYNC109",
+    "RUF012", "RUF059", "B007", "B023", "B904",
+    "ARG001", "ARG002", "PERF401", "PERF403",
+    # Research scripts use print() freely, build their own data, etc.
+    "T201", "T203",
+    "S102", "S104", "S105", "S106", "S108", "S110", "S112",
+    "S307", "S308", "S324", "S501", "S607",
+    "D", "ANN",
+    "TRY",
+    "PT018",
+    # Step 5 additions — research scripts use eager logging, naive datetime,
+    # subprocess.run without check, etc.
+    "DTZ", "G", "PLW1510", "PLW1508", "PLW0108",
+]
+# Django app: list_display / Meta.ordering / model attrs use mutable
+# class defaults by Django convention — RUF012 is a false positive here.
+# Run-once entry points and deploy scripts: blocking disk I/O is fine.
+# These don't run on the server's hot path.
+"aii_runpod/**/*.py" = [
+    "ASYNC230", "ASYNC240", "ARG001", "ARG002", "T201",
+    # RunPod deployment scripts: classes are dataclass-like containers,
+    # methods are short imperative steps — docstrings would mostly repeat names.
+    "D101", "D102", "D103",
+    "ANN001", "ANN201", "ANN202",
+]
+"aii_lib/src/aii_lib/agent_backend/__main__.py" = ["ASYNC230", "ASYNC240", "T201"]
+# Skill scripts are CLIs that print to stdout for the user.
+".claude/skills/**/*.py" = [
+    "E402", "T201", "T203", "D", "ANN",
+    # Skills are throwaway CLI tools — broad bandit relaxation matches scripts/.
+    "S105", "S106", "S108", "S110", "S112", "S310", "S607",
+]
+# Autologin runs once at startup (cookie write, browser launch); blocking is fine.
+# Subprocess calls invoke ``claude`` / ``tmux`` (known PATH binaries), and
+# best-effort except-pass cleanup is the right pattern for browser/cookie
+# teardown. /tmp diagnostic dumps are read by humans for debugging.
+"aii_lib/src/aii_lib/llm_backend/claude_max/autologin/**/*.py" = [
+    "ASYNC230", "ASYNC240",
+    "S108",   # /tmp screenshot dumps for OAuth flow debugging
+    "S110",   # best-effort cleanup of partial browser state
+    "S607",   # ``claude`` / ``tmux`` are PATH binaries, not user-controlled
+]
+# Subprocess wrappers around well-known binaries (claude, tmux, gh, git,
+# pg_dump). All target names are constants, never user-controlled.
+"aii_lib/src/aii_lib/utils/tmux.py" = ["S607"]
+"aii_lib/src/aii_lib/utils/gh_auth.py" = ["S607"]
+"aii_lib/src/aii_lib/utils/deploy_github/repo_ops.py" = ["S607"]
+"aii_lib/src/aii_lib/abilities/ability_server/discovery.py" = ["S607", "S110"]
+"aii_lib/src/aii_lib/agent_backend/utils/agent_helpers.py" = ["S607"]
+# Launcher CLI: print() is the user-facing status channel (start/stop msgs,
+# attach hints, error notices). T201/T203 strips would silence the launcher.
+"aii_launcher/src/aii_launcher/**/*.py" = ["S110", "S607", "T201", "T203"]
+# Agent backend session/hook/streaming cleanup paths: best-effort by design.
+# Adding logger.exception spam would obscure the real failure that follows.
+"aii_lib/src/aii_lib/agent_backend/claude_agent_sdk/active_sessions.py" = ["S110"]
+"aii_lib/src/aii_lib/agent_backend/claude_agent_sdk/core/hooks.py" = ["S110"]
+"aii_lib/src/aii_lib/agent_backend/claude_agent_sdk/core/streaming.py" = ["S110"]
+# Sinks: best-effort flush during teardown.
+"aii_lib/src/aii_lib/run/sinks/clone/sink.py" = ["S110"]
+"aii_lib/src/aii_lib/run/sinks/console/sink.py" = ["S110"]
+"aii_lib/src/aii_lib/run/sinks/otel/traces/handlers.py" = ["S110"]
+# Run sources: best-effort source cleanup.
+"aii_lib/src/aii_lib/run/sources/stop/gen_stop.py" = ["S110"]
+# Aii_lib config cache + ability registry cleanup (S108 = /tmp config cache,
+# S110 = registry teardown).
+"aii_lib/src/aii_lib/config.py" = ["S108"]
+"aii_lib/src/aii_lib/abilities/aii_ability.py" = ["S110"]
+# Claude usage monitor uses /tmp pipes for IPC between watcher and CLI.
+"aii_lib/src/aii_lib/llm_backend/claude_max/usage.py" = ["S108", "S110"]
+"aii_lib/src/aii_lib/llm_backend/claude_max/monitor.py" = ["S108"]
+# Pipeline scoring step: best-effort score normalization fallthrough.
+"aii_pipeline/src/aii_pipeline/steps/_1_seed_hypo/invention_kg/steps/_gen_hypo_seeds/_scoring.py" = ["S110"]
+# Django app boot: best-effort signal-handler registration.
+"aii_server/dashboard/apps.py" = ["S110"]
+# AppSink SSE proxy: best-effort port-file cleanup.
+"aii_server/dashboard/api/run_to_app.py" = ["S110"]
+# Eval scaffolding (chemcot/asta/etc.): research scripts, /tmp temp files OK.
+"aii_eval/**/*.py" = ["E402", "T201", "T203", "D", "TRY", "ANN", "S108", "S110"]
+# Best-effort cleanup paths in run lifecycle: missing tmux session, already-
+# closed sink, stale cache file. Logging the swallowed exception would spam.
+"aii_lib/src/aii_lib/run/run.py" = ["S110", "S112"]
+"aii_lib/src/aii_lib/run/llm_summary.py" = ["S110", "S108"]
+"aii_lib/src/aii_lib/run/sinks/clone/sequenced_sink.py" = ["S110"]
+"aii_lib/src/aii_lib/run/workflows/agent_worker/worker/server.py" = ["S108"]
+# Agent backend recovery: best-effort cleanup of subprocesses, sessions, sockets.
+"aii_lib/src/aii_lib/agent_backend/claude_agent_sdk/core/error_recovery.py" = ["S110"]
+# Credentials: best-effort token-refresh fallthrough; failures bubble up cleanly.
+"aii_lib/src/aii_lib/abilities/ability_server/credentials.py" = ["S110", "S112"]
+# Server bootstrap: subprocess for clean shutdown of orphaned children.
+"aii_server/aii_server.py" = ["E402", "S104", "S110", "S607"]
+# Dashboard pod discovery uses urlopen against the RunPod API allowlist.
+"aii_server/dashboard/services/pod_discovery.py" = ["S310"]
+# Dashboard run-status state field is named "token" (status state, not secret).
+"aii_server/dashboard/services/runs_status.py" = ["S105"]
+# Run config endpoint: best-effort cleanup of stale config files.
+"aii_server/dashboard/api/run_config.py" = ["S112"]
+# Pipeline CLI swallows expected ``KeyboardInterrupt`` / shutdown races.
+"aii_pipeline/src/aii_pipeline/cli.py" = ["ASYNC230", "ASYNC240", "T201", "S110"]
+# Pipeline orchestrator (``pipeline.py``): same shutdown-race patterns.
+"aii_pipeline/src/aii_pipeline/pipeline.py" = ["ASYNC230", "ASYNC240", "T201"]
+# RunPod deploy: ssh subprocess + best-effort cleanup.
+"aii_runpod/src/aii_runpod/deploy/remote.py" = ["S110"]
+# Servers binding to 0.0.0.0 — RunPod containers expose ports on all interfaces;
+# this is intentional, not a bug.
+"aii_lib/src/aii_lib/run/listener.py" = ["S104"]
+"aii_runpod/src/aii_runpod/comms/entrypoint.py" = ["S104"]
+# Django/Ninja API views: ``request`` is a required first positional even when
+# unread, and Django URL conf uses unused arg patterns. Same for migrations.
+"aii_server/dashboard/api/**/*.py" = [
+    "ARG001", "ARG002",
+    # Django/Ninja route handlers: the route decorator + ninja schema docs
+    # the surface; per-handler docstrings duplicate.
+    "D102", "D103",
+    "ANN001", "ANN201", "ANN202",
+]
+"aii_server/agent_abilities/**/*.py" = [
+    "ARG001", "ARG002",
+    "D101", "D102", "D103",
+    "ANN001", "ANN201", "ANN202",
+]
+"aii_server/config/**/*.py" = [
+    "ARG001", "ARG002",
+    "D100", "D101", "D102", "D103",
+    "ANN001", "ANN201", "ANN202",
+]
+# Django dashboard models / admin / services: model methods often dispatch
+# to ORM and don't need docstrings beyond the class-level summary.
+"aii_server/dashboard/services/**/*.py" = [
+    "D101", "D102", "D103",
+    "ANN001", "ANN201", "ANN202",
+]
+"aii_server/dashboard/migrations/**/__init__.py" = ["D104"]
+"aii_server/dashboard/models.py" = [
+    "RUF012", "D106",
+    "ANN001", "ANN201", "ANN202",
+]
+"aii_server/dashboard/admin.py" = ["RUF012"]
+# OTel exporters / sink writers maintain persistent file handles across
+# write() calls — that's the whole point of streaming exporters. ARG fires
+# on conventional callback signatures (e.g. on_export_complete(self, batch)).
+"aii_lib/src/aii_lib/run/sinks/**/*.py" = ["ARG001", "ARG002"]
+# LLM/agent backends: telemetry adapters and message parsers conform to a
+# shared interface signature even when a specific implementation doesn't
+# read every arg (task_name, prompt_index, model, duration, etc.).
+"aii_lib/src/aii_lib/agent_backend/**/*.py" = ["ARG001", "ARG002"]
+# Run object dispatchers, workers, lifecycle hooks: shared signatures across
+# subclasses where individual implementations don't read every arg.
+"aii_lib/src/aii_lib/run/**/*.py" = ["ARG001", "ARG002"]
+"aii_lib/src/aii_lib/run_lifecycle.py" = ["ARG001", "ARG002"]
+"aii_pipeline/src/aii_pipeline/run/**/*.py" = ["ARG001", "ARG002"]
+# Pipeline executors have a uniform substep-call signature — same story.
+"aii_pipeline/src/aii_pipeline/steps/_3_invention_loop/executors/**/*.py" = [
+    "ASYNC230", "ASYNC240", "ARG001", "ARG002",
+]
+# tests/ inside subprojects (e.g. ``aii_server/tests/``, ``aii_lib/tests/``) —
+# same relaxations as root tests/.
+"**/tests/**/*.py" = [
+    "ARG001", "ARG002", "ARG005",
+    "S104", "S108",
+    "T201", "T203",
+    "D", "ANN", "TRY", "PT018",
+    "RUF012", "B007", "B017", "B023",
+]
+# Pipeline orchestration steps + executors: shared signatures across substep
+# pairs (Claude/OpenRouter parallel implementations). Adding ANN to every callback
+# arg adds no value; D100/103 on the per-step modules adds boilerplate.
+"aii_pipeline/src/aii_pipeline/steps/**/*.py" = [
+    "ASYNC230", "ASYNC240", "T201",
+    "ANN001", "ANN201", "ANN202", "ANN204",
+    "D100", "D102", "D103",
+]
+# Prompt builders: ~30 modules of LLM template construction. Each prompt is
+# self-documenting via the template text — module/function docstrings would
+# duplicate. Args are always uniform so ANN001 noise.
+"aii_pipeline/src/aii_pipeline/prompts/**/*.py" = [
+    "ARG001", "ARG002", "S608",
+    "ANN001", "ANN201", "ANN202",
+    "D100", "D101", "D102", "D103",
+]
+# scripts/ (one-off CLI tools): print() is the output, not logging.
+"scripts/**/*.py" = [
+    "T201", "T203",
+    "D100", "D101", "D102", "D103", "D104",
+    "ANN001", "ANN201", "ANN202",
+    # Backup/utility scripts use local-time filenames + log timestamps.
+    "DTZ006", "DTZ011",
+]
+# Django migrations: auto-generated by makemigrations, untouched by humans.
+"aii_server/dashboard/migrations/**/*.py" = [
+    "ARG001", "ARG002", "RUF012",
+    "D100", "D101", "D102", "D103",
+    "ANN001", "ANN201", "ANN202",
+]

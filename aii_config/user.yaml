@@ -1,0 +1,26 @@
+# Per-user settings — copied to each user's config dir on creation.
+# Users override these in their own copy at
+# data/users/<username>/config/user.yaml. Validation runs server-side
+# on PUT /api/config and filters GET /api/config/presets.
+
+# Maximum number of concurrent active runs per user.
+max_active_runs: 3
+
+# Models the user can select per-step. Substring match: a model string
+# is allowed if it contains any of these (e.g. "haiku" matches
+# "claude-haiku-4-5"). Effort is always restricted to {low,medium,high}.
+allowed_models: [haiku, sonnet]
+
+# Presets the user can apply (filters GET /api/config/presets).
+allowed_presets: [lite, pro]
+
+# Upper bounds on numeric config fields. Lower bound is always 1.
+# ``gen_hypo_loop_iterations`` = "create idea" rounds (hypo gen+review loop).
+# ``invention_loop_iterations`` = "test idea" rounds (strategy→plan→execute loop).
+limits:
+  gen_hypo_loop_iterations: 3
+  invention_loop_iterations: 5
+  # Max artifact directions per strategy (= artifacts per invention
+  # iteration). Maps to ``invention_loop.gen_strat.art_limit``.
+  art_limit_per_round: 5
+  file_size_mb: 100

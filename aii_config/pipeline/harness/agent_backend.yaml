@@ -1,0 +1,71 @@
+# =============================================================================
+# Agent backend — the agentic loop driver
+# =============================================================================
+# Currently the only supported agent_backend is ``claude_agent_sdk`` (spawns
+# the Claude CLI as a subprocess and drives the tool loop). Per-step
+# overrides land via ``claude_agent:`` blocks in pipeline.yaml; defaults
+# below flow through ``_apply_backend_defaults_to_claude_agent`` in the
+# loader.
+# =============================================================================
+
+# Which agent_backend a per-step block defaults to
+active: claude_agent_sdk
+
+claude_agent_sdk:
+  # Defaults applied to every per-step ``claude_agent:`` block. Transport /
+  # orchestration knobs only — model + effort live under the active
+  # llm_backend's defaults so they swap together with the model.
+  defaults:
+    max_turns: ~                  # unlimited
+    agent_timeout: 7200           # 120 min default for entire agent run
+    disallowed_tools: ["Task"]
+    allowed_tools: []
+    agent_retries: 3
+    seq_prompt_timeout: ~         # no timeout (None)
+    seq_prompt_retries: 3
+    message_timeout: 720          # 12 min per SDK message
+    message_retries: 5            # fork+resume attempts
+    max_concurrent_agents: 5
+    telemetry: true               # emit per-call OTel via the SDK CLI
+
+  # Claude SDK CLI's built-in OTel transport. Same Grafana endpoint as the
+  # AII pipeline's OTel sink → AII spans + Claude SDK spans land in one
+  # trace tree.
+  sdk_telemetry:
+    # Flip to true in agent_backend.private.yaml to ship traces/metrics
+    # off-machine. Public default is OFF (local-JSONL only).
+    enabled: false
+
+    # OTLP gateway URL. Empty in public; set in private (e.g. your Grafana
+    # Cloud OTLP gateway hostname under ``/otlp``).
+    otlp_endpoint: ""
+
+    # Env-var name holding the Authorization header value (typically
+    # ``Basic <b64>`` for Grafana Cloud). The actual secret lives in .env
+    # (e.g. ``GRAFANA_OTLP_AUTH=Basic ...``); this field only names which
+    # var to read.
+    auth_env: GRAFANA_OTLP_AUTH
+
+    otlp_protocol: http/protobuf
+    service_name: aii-claude-sdk
+
+    # Export cadences (ms). Lower → finer charts, higher → fewer egress
+    # calls. SDK defaults are 10 000 / 5 000 — we leave logs at default and
+    # bump metrics so the cost charts have a smoother shape.
+    metric_export_interval_ms: 60000
+    logs_export_interval_ms: 5000
+
+    # Traces are still beta in the SDK and require a separate opt-in flag
+    # (``CLAUDE_CODE_ENHANCED_TELEMETRY_BETA``). When on we also export
+    # ``OTEL_TRACES_EXPORTER=otlp`` so per-model-call and per-tool-call
+    # spans land in Tempo at ``service.name=aii-claude-sdk``. Bash/PowerShell
+    # tool subprocesses inherit ``TRACEPARENT`` so any OTel-instrumented
+    # tool nests under the SDK trace.
+    enable_traces_beta: true
+
+    # Capture the actual prompt + assistant response text in the
+    # ``claude_code.user_prompt`` log event and the
+    # ``claude_code.interaction`` span. SDK default is OFF for privacy;
+    # we flip it ON because AII runs are research artifacts where the
+    # full conversation IS the data we want to inspect later.
+    log_user_prompts: true

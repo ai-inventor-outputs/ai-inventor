@@ -1,0 +1,42 @@
+# Ability Server Configuration
+# ============================
+# API keys are hardcoded in skill scripts (not set here).
+# Host/port live in aii_config/server/server.yaml (single source).
+
+# Per-request timeout (seconds) for HTTP calls to the ability service.
+# Overridable per-decorator via @aii_ability(timeout=...).
+client:
+  timeout: 180
+
+# Retry configuration for transient errors (connection drops, timeouts, etc.)
+retry:
+  mode: exponential     # Retry strategy: "exponential" (only valid option for now)
+  max_retries: 3        # Max retry attempts (0 = no retries)
+  min_backoff: 1.0      # Initial backoff in seconds
+  max_backoff: 20.0     # Maximum backoff cap in seconds
+
+# Claude Code auth
+claude:
+  token_refresh_threshold_seconds: 7200  # Re-login when OAuth token has <2hr remaining
+  oauth_max_account_age_seconds: 25200  # Max time (7h) to use one account before switching (0 = disabled)
+
+# Worker memory recycling
+# Workers that exceed max_memory_mb are gracefully restarted after finishing
+# the current request. Prevents OOM kills from memory-leaking libraries.
+worker_memory:
+  max_memory_mb: 2048  # Restart worker if RSS exceeds this (MB)
+  check_interval: 10   # Check memory every N requests (0 = disabled)
+
+# Temp file cleanup configuration
+# Automatically removes old downloaded datasets/tables to prevent disk bloat
+cleanup:
+  max_age_hours: 1.0    # Delete files older than this (hours)
+  interval_minutes: 10  # How often to check for old files (minutes)
+
+# =============================================================================
+# Per-tool overrides (optional — decorator @aii_ability(max_workers=N) is the default)
+# Only add entries here to override the decorator's max_workers value.
+# =============================================================================
+# tool_overrides:
+#   aii_hf_datasets__search_datasets:
+#     max_workers: 30

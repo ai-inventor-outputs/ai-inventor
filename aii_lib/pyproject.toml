@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aii_lib"
+version = "0.1.0"
+description = "GenAI toolkit for ai-inventor pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Adrian", email = "adrian@example.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "httpx>=0.28.0",
+    "loguru>=0.7.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "tenacity>=8.0.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    # Durable workflow runtime — replaces the v27 replay engine (clone log,
+    # _playback_mode, ReplayPolicy, prep_fork). DBOS uses Postgres for the
+    # journal; the project-local cluster lives at aii_data/db/pgdata.
+    # See DBOS_ADOPTION_SUMMARY.md and DETERMINISM_CONTRACT.md.
+    "dbos>=1.0.0",
+]
+
+[project.optional-dependencies]
+# Thin HTTP client — call_server(), @aii_ability decorator, telemetry (~9 MB)
+ability-client = [
+    "httpx>=0.28.0",
+    "loguru>=0.7.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0",
+    "jsonschema>=4.0",
+    "requests>=2.31.0",
+    "tenacity>=8.0.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+]
+# Full ability server — LLM clients, agent SDK, PDF/HTML parsing, FastAPI (~120 MB+)
+ability-server = [
+    "aii_lib[ability-client]",
+    # LLM clients & agent SDK
+    "tenacity>=8.0.0",
+    "openai>=1.99.0",
+    "anthropic>=0.62.0",
+    "aiohttp>=3.9.0",
+    "html2text>=2024.2.26",
+    "PyMuPDF>=1.25.0",
+    "google-genai>=1.0.0",
+    "claude-agent-sdk @ git+https://github.com/anthropics/claude-agent-sdk-python.git@main",
+    # Server framework
+    "fastapi>=0.116.0",
+    "uvicorn>=0.35.0",
+    "pydantic>=2.11.0",
+    # Browser automation (autologin — nodriver: async CDP, no chromedriver binary)
+    "nodriver",
+    "opencv-python",  # Required by nodriver's verify_cf() for Cloudflare checkbox
+    "browser_cookie3",  # Extract cookies from Chrome for multi-account autologin
+]
+dev = [
+    "aii_lib[ability-server]",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-xdist>=3.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.json", "*.md"]

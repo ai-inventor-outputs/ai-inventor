@@ -1,0 +1,87 @@
+# ============================================================================
+# SINKS — Outbound channels (run-bus → file / network)
+# ============================================================================
+
+sinks:
+  # ─── Console sink (colored stderr) ──────────────────────────────────────────
+  console:
+    # Char cap on truncatable message types (assistant / tool_call / tool_result
+    # / module_output / etc.). Lifecycle + summary types are never truncated.
+    msg_truncate: 100000
+    # When false, only summaries + lifecycle reach stdout — full LLM I/O is
+    # suppressed even at DEBUG level.
+    log_llm_messages: true
+    # When false, ``status_private_*`` events (sink lifecycle, internal
+    # debug breadcrumbs) are dropped before reaching stdout.
+    include_private_messages: true
+
+  # ─── To-app sink (localhost FastAPI server aii_server reads from) ──────────
+  to_app:
+    # Port for the outbound HTTP server. ``0`` binds a random free port; the
+    # bound number is written to ``<run_dir>/sinks/to_app/.port`` so aii_server
+    # can discover it without coordination. Set a fixed port when running
+    # multiple pipelines on the same machine and you want a stable endpoint
+    # per run.
+    port: 0
+
+  # ─── Interim narrative summary sink (event-driven, opt-in) ────────────────
+  interim_summary:
+    # Toggle the periodic two-paragraph narrative summary the dashboard
+    # shows for long-running tasks. When enabled, eligible Run-bus events
+    # (those with ``extras.llm_gen_summary`` populated by the per-message
+    # buffer) are appended to an in-memory buffer; ``flush()`` decides
+    # whether enough wall-clock time has elapsed since the last narrative
+    # to fire a new one and spawns a one-shot worker thread that calls
+    # the summarizer LLM and emits a typed
+    # ``status_public_interim_summary`` back onto the bus.
+    enabled: true
+    # Cadence of narrative emits. The first emit fires at most
+    # ``initial_delay_s`` after sink start; subsequent emits require
+    # ``>= interval_s`` since the last fire AND ``>= min_new_messages``
+    # new summarized messages in the buffer. Lower interval → more
+    # frequent narrative refreshes (more LLM cost); higher → coarser
+    # dashboard updates.
+    interval_s: 120
+    initial_delay_s: 10.0
+    min_new_messages: 2
+    # Per-tier wall-clock budget for the LLM call. Heavier than title
+    # gen because narrative summaries pull a much larger context.
+    timeout_s: 20.0
+    # Per-message clip before joining into the prompt blob —
+    # prevents one giant message from dominating. The chain walker
+    # in ``aii_lib.workflows.summarize`` handles per-tier context
+    # truncation separately.
+    max_chars_per_msg: 5000
+
+  # ─── Heartbeat sink (pipeline writes only) ─────────────────────────────────
+  health:
+    # Pipeline appends ``ok <iso-ts>`` to ``<run_dir>/sinks/health/.heartbeat``
+    # every heartbeat_seconds. On run_end it also writes a final
+    # ``complete <ts>`` or ``paused <ts>`` line. Liveness derivation lives
+    # server-side; the heartbeat sink itself never reads or interprets the file.
+    heartbeat_seconds: 5.0
+
+  # ─── OpenTelemetry sink (traces + metrics) ──────────────────────────────────
+  otel:
+    enabled: true
+
+    # Local JSONL export (always available, no external services). Paths are
+    # relative to the run dir.
+    traces_file: sinks/otel/traces.jsonl
+    metrics_file: sinks/otel/metrics.jsonl
+    metrics_interval_ms: 30000
+
+    # Trace export cadence:
+    #   0  → SimpleSpanProcessor (each span exports immediately on its end)
+    #   >0 → BatchSpanProcessor with this schedule_delay_millis (spans batch
+    #         for up to N ms before exporting). Lower latency vs fewer
+    #         outbound calls; affects both local JSONL and OTLP egress.
+    trace_export_interval_ms: 0
+
+    # OTLP export. Provide ``otlp_endpoint`` (and optionally
+    # ``otlp_insecure``) in the gitignored ``sinks.private.yaml``
+    # sibling to ship traces/metrics off-machine. The bearer-style
+    # auth header is read from the GRAFANA_OTLP_AUTH env var at runtime.
+
+    # Sampling (1.0 = trace everything, 0.1 = 10%).
+    sample_rate: 1.0

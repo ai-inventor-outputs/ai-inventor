@@ -1,0 +1,21 @@
+# =============================================================================
+# LLM Backend Configuration (bootstrap defaults)
+# =============================================================================
+# Source-of-truth runtime config lives in ``aii_config/pipeline/harness/<name>.yaml`` under
+# ``llm_backend.<name>``. This file is the *bootstrap* layer used when an
+# llm_backend client is constructed without an active PipelineConfig
+# (standalone scripts, tests, CLI shims). API keys load from ``.env`` via
+# ``load_dotenv()`` — do NOT put keys here.
+
+# Direct API calls via OpenRouter (used outside the claude_agent_sdk).
+openrouter:
+  default_model: anthropic/claude-sonnet-4-5
+
+# Anthropic Claude Max plan via OAuth/cookies (used by claude_agent_sdk
+# when ``llm_backend.claude_max`` is active). The CLI authenticates against
+# api.anthropic.com on its own — there's no Python client to construct, so
+# this section is intentionally minimal. Account list, usage thresholds,
+# and OAuth refresh policy live in ``aii_config/pipeline/harness/<name>.yaml::
+# llm_backend.claude_max``.
+claude_max:
+  default_model: claude-sonnet-4-6

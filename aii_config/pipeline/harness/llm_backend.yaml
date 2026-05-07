@@ -1,0 +1,108 @@
+# =============================================================================
+# LLM backend — where the model lives
+# =============================================================================
+# Two options today:
+#
+#   claude_max   — OAuth/cookies → api.anthropic.com. The only backend the
+#                  Claude Agent SDK (claude_agent_sdk agent_backend) speaks to.
+#   openrouter   — direct ``OpenRouterClient.chat`` to OpenRouter's native
+#                  API. Used by per-step code that bypasses the SDK loop
+#                  (summarize, multi-LLM hypothesis, free_viz, judges).
+#                  No agent_backend partners with this today.
+#
+# Per-step ``claude_agent:`` blocks may override ``llm_backend:`` directly,
+# which automatically also pulls in that backend's ``defaults.{model,effort}``
+# below — see ``_apply_backend_defaults_to_claude_agent`` in the loader.
+# A ``claude_agent:`` block whose resolved ``llm_backend`` isn't a
+# supported partner is rejected at config load (today only
+# ``claude_agent_sdk + claude_max`` is supported).
+# =============================================================================
+
+# Which llm_backend a per-step block defaults to
+active: claude_max
+
+# ---------------------------------------------------------------------------
+# Claude Max plan via OAuth/cookies (today's default).
+# The Claude CLI authenticates to api.anthropic.com using the user's Claude
+# Max subscription cookies + OAuth refresh. No API key spend — usage counts
+# against the plan's session/weekly quotas.
+# Compatible agent_backends: claude_agent_sdk
+# ---------------------------------------------------------------------------
+claude_max:
+
+  # Model defaults inherited by every per-step block whose effective
+  # llm_backend resolves to ``claude_max``.
+  defaults:
+    model: claude-sonnet-4-6
+    effort: high                   # low/medium/high/max — opus-4-7 always redacts thinking; sonnet-4-6 leaves it visible
+
+  # Background usage poller — blocks calls when quotas approach.
+  usage_tracking:
+    enabled: true
+    check_interval_seconds: 660  # each check ~3-5s tmux scrape
+
+    # Block when usage >= threshold % (set to null to disable a metric)
+    thresholds:
+      current_session: 70
+      current_week_all_models: 90
+      current_week_sonnet: 95
+
+  # OAuth token refresh policy
+  auth:
+    # Re-login if OAuth token has fewer than this many seconds remaining.
+    # Checked between pipeline steps to prevent mid-step token expiry.
+    # Set to 0 to disable. Default: 3600 (1 hour).
+    min_token_validity_seconds: 3600
+
+  # Per-call usage telemetry (separate from agent_backend.claude_agent_sdk.
+  # sdk_telemetry). This is the lightweight rate-limit watcher — every
+  # call writes one JSONL line so we can plot quota burn over time.
+  telemetry:
+    enabled: true
+    log_file: /tmp/claude_usage_telemetry.jsonl
+
+  # Account priority list lives in ``llm_backend.private.yaml`` —
+  # personal emails + Chrome profile names belong outside the tracked
+  # config so the sync-public flow can't leak them. Override format:
+  #
+  #   claude_max:
+  #     account_priority:
+  #       - email: alice@example.com
+  #         chrome_profile: Default
+  #       - email: bob@example.com
+  #         chrome_profile: Profile 2
+  #         cookie_dir: shared-bob   # optional explicit subdir
+  #
+  # Each entry's stored cookies + OAuth creds live in
+  # ``<claude-dir>/accounts/<key>/``. ``<key>`` defaults to the entry's
+  # email with ``@`` swapped to ``_at_`` so reordering or commenting
+  # out accounts in this list NEVER re-points an entry at another
+  # account's stored creds. Loader:
+  # ``aii_lib.llm_backend.claude_max.autologin.accounts.AccountManager``.
+  account_priority: []
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter — direct API path.
+# Used by per-step pipeline code that bypasses the Claude Agent SDK loop
+# entirely (``_run_task_openrouter`` and friends — gen_hypo with
+# ``use_claude_agent: false``, summarize.py, research/audit/rank judges,
+# free_viz image gen). Talks to OpenRouter's native API via
+# ``aii_lib.OpenRouterClient`` — no local proxy, no Anthropic-format
+# translation.
+#
+# NOT compatible with the claude_agent_sdk agent_backend. The previous
+# bridge (LiteLLM proxy translating Anthropic-format SDK calls to
+# OpenAI-format OpenRouter calls) was removed because Anthropic
+# server-side tools (``web_search_20250305`` etc.) don't translate to
+# OpenAI's function-call schema and every WebSearch call returned 400.
+# ``PipelineConfig._validate_backend_pairings`` rejects the combo at
+# config load.
+# ---------------------------------------------------------------------------
+openrouter:
+
+  # Model defaults inherited by direct-OpenRouter callsites that read
+  # ``llm_backend.openrouter.defaults`` (per-step overrides win).
+  defaults:
+    model: openai/gpt-5-mini
+    effort: high

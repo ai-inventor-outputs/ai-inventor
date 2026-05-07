@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["proof_successful", "verified", "lean_code", "proof_explanation", "lemmas"],
+  "properties": {
+    "proof_successful": {
+      "type": "boolean",
+      "description": "Whether the proof was successfully verified by Lean compiler"
+    },
+    "verified": {
+      "type": "boolean",
+      "description": "Whether the lean skill verification returned verified: true"
+    },
+    "lean_code": {
+      "type": "string",
+      "description": "Complete Lean 4 code including imports, lemmas, and main theorem"
+    },
+    "proof_explanation": {
+      "type": "string",
+      "description": "Explanation of proof strategy, approach used, and key insights"
+    },
+    "lemmas": {
+      "type": "array",
+      "description": "List of lemmas used in the proof (lemma pool)",
+      "items": {
+        "type": "object",
+        "required": ["name", "statement", "compiler_out", "is_compiler_verified"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Lemma name (e.g., helper1, bound_lemma)"
+          },
+          "statement": {
+            "type": "string",
+            "description": "Lean statement of the lemma"
+          },
+          "compiler_out": {
+            "type": "string",
+            "description": "Raw Lean compiler output for this lemma/theorem"
+          },
+          "is_compiler_verified": {
+            "type": "boolean",
+            "description": "Whether the Lean compiler verified this lemma without errors"
+          },
+          "tactic": {
+            "type": "string",
+            "description": "Main tactic used to prove this lemma (e.g., ring, simp, induction)"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "approaches_tried": {
+      "type": "array",
+      "description": "List of proof approaches attempted (for failed proofs)",
+      "items": {
+        "type": "object",
+        "required": ["approach", "reason_failed"],
+        "properties": {
+          "approach": {
+            "type": "string",
+            "description": "Description of the approach tried"
+          },
+          "reason_failed": {
+            "type": "string",
+            "description": "Why this approach did not work"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "error_messages": {
+      "type": "array",
+      "description": "Final error messages from Lean compiler (for failed proofs)",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

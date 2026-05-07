@@ -1,0 +1,80 @@
+[project]
+name = "aii_pipeline"
+version = "0.1.0"
+description = "AI Inventor Pipeline - Automated research pipeline with multi-LLM agent systems"
+authors = [
+    {name = "Adrian", email = "adrian@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # NOTE: aii_lib is required but NOT listed here (name collision on PyPI).
+    # Install it first: uv pip install -e aii_lib/
+
+    # Core dependencies
+    "claude-agent-sdk @ git+https://github.com/anthropics/claude-agent-sdk-python.git@main",
+    "pyyaml>=6.0",
+    "tenacity>=8.0.0",
+
+    # AI/ML APIs
+    "openai>=1.99.0",
+    "anthropic>=0.62.0",
+    "google-genai>=1.55.0",
+
+    # Data processing and ML
+    "pandas>=2.3.0",
+    "numpy>=1.26.0,<2.3.0",  # Compatible with Python 3.12
+    "scikit-learn>=1.7.0",
+    "datasets>=4.0.0",
+    "huggingface-hub>=0.34.0",
+
+    # Visualization
+    "matplotlib>=3.10.0",
+    "seaborn>=0.13.0",
+
+    # Web framework and HTTP
+    "fastapi>=0.116.0",
+    "uvicorn>=0.35.0",
+    "httpx>=0.28.0",
+    "aiohttp>=3.12.0",
+    "websockets>=15.0",
+
+    # Data validation and serialization
+    "pydantic>=2.11.0",
+
+    # Utilities
+    "python-dotenv>=1.1.0",
+    "rich>=13.7.0",
+    "tqdm>=4.67.0",
+    "beautifulsoup4>=4.13.0",
+    "openpyxl>=3.1.0",
+    "selectolax>=0.3.0",
+    "lzstring>=1.0.4",  # For Lean playground URL compression
+    "psutil>=5.9.0",    # cli._kill_child_processes — atexit cleanup of agent subprocesses
+
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["aii_pipeline*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-xdist>=3.0.0",
+    "httpx>=0.28.0",
+    "tenacity>=8.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 88
+target-version = ['py312']
+
+[tool.isort]
+profile = "black"
+line_length = 88

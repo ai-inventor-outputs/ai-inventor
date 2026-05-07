@@ -1,0 +1,103 @@
+# Typos allowlist — domain terms that look like typos but aren't.
+# Extends the default dictionary; new entries should explain WHY.
+
+[default.extend-words]
+# Pipeline phase / module name: "gen_strat" = strategy generation. Used
+# everywhere as identifier, type literal, file/dir name, log message.
+strat = "strat"
+Strat = "Strat"
+STRAT = "STRAT"
+
+# Research-paper terminology — "fracton" is a real condensed-matter
+# physics term (a quasiparticle). Appears in test data + paper prompts.
+fracton = "fracton"
+Fracton = "Fracton"
+
+# RunPod API field name — their docs spell it this way. Renaming would
+# break the integration.
+uninterruptable = "uninterruptable"
+
+# LAMDA research lab name (Learning And Mining from DatA) — appears as
+# a paper-author affiliation in seed-prompt data files.
+lamda = "lamda"
+
+# Class name in the SGI evaluation library (vendored upstream). The
+# class is genuinely spelled this way in their public API; renaming
+# at the call sites would crash the import. Used in
+# ``aii_eval/sgibench/dry_experiment/run_one.py`` etc.
+Paser = "Paser"
+paser = "paser"
+
+# OpenAPI / ty diagnostics use "unparseable" as a literal status
+# string; not worth changing for a stylistic preference.
+unparseable = "unparseable"
+
+# Pipeline-task ID prefix — ``FND_exec_*`` ("FIND execution") used in
+# generated task identifiers. Acronym, not a typo.
+FND = "FND"
+
+# Hyphenated compounds — typos doesn't recognize "mis-labeled",
+# "mis-located", "mis-spelled" as valid (treats "mis" as standalone).
+mis = "mis"
+
+# HTML5 video API event name — "seeked" fires after a seek operation
+# completes. Real word in this context, not "sought".
+seeked = "seeked"
+
+# `ded` substring inside legitimate identifiers (added/decided/embedded
+# tokens in trace components) — frontend code; FP from typos' aggressive
+# substring matching.
+ded = "ded"
+
+# `Chek` appears inside generated demo-message JSON content (LLM-produced
+# text in fixture data). Not worth chasing in fixture files.
+Chek = "Chek"
+
+# Acronym substring appearing in mock data identifiers.
+SER = "SER"
+
+# `multline` is a real LaTeX environment from the amsmath package
+# (multi-line equations) — appears in the vendored NeurIPS style file.
+# Not a typo of "multiline".
+multline = "multline"
+
+# Common abbreviation for "threshold" used as a local variable in
+# usage/monitoring code (e.g. ``val >= thr``). Not a typo of "the".
+thr = "thr"
+
+# `Gae` matches inside RunPod pod-id strings like ``run_anDiSbGaeE4M``
+# embedded in code comments. Random base64-ish suffixes.
+Gae = "Gae"
+
+# Domain registrar / SEO-tool / research-institute proper nouns appearing
+# in skill documentation.
+Sav = "Sav"        # Sav.com — domain registrar
+Frase = "Frase"    # Frase.io — SEO content brief tool
+IIT = "IIT"        # Indian Institute of Technology — paper author affiliation
+PN = "PN"          # acronym/file-extension fragment ("PNGs" splits to "PN"+"Gs")
+
+[files]
+# Generated / vendored content — skip entirely.
+extend-exclude = [
+    "**/*.lock",
+    "**/.venv/**",
+    "**/node_modules/**",
+    "**/_orval/**",
+    "**/openapi.json",
+    "**/lib/types/backend.ts",
+    "**/.next/**",
+    "**/dist/**",
+    "**/build/**",
+    # Seed-prompt JSON: 200k+ lines of LLM-extracted research-paper text;
+    # full of names, foreign-language terms, archaic spellings.
+    "aii_pipeline/src/aii_pipeline/prompts/steps/_1_seed_hypo/*.json",
+    "aii_pipeline/src/aii_pipeline/steps/_1_seed_hypo/invention_kg/data/**",
+    # Vendored Anthropic skills + research papers.
+    ".claude/skills/anthropic-*/**",
+    ".claude/skills/archived/**",
+    "resources/**",
+    # NeurIPS submission drafts: research prose with acronyms (RND, SciND,
+    # AGENT, etc.), citations, and foreign-language author names. Spell
+    # checking these is more noise than signal.
+    "neurips/**",
+]

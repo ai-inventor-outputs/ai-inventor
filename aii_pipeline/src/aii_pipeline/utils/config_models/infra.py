@@ -1,0 +1,300 @@
+"""Infrastructure config models — sinks, tools, init, execution.
+
+API key handling lives in :mod:`aii_lib.config` — re-exported here so the
+pipeline's PipelineConfig can keep using `APIKeysConfig` without code changes.
+"""
+
+import os
+
+from aii_lib.config import APIKeysConfig  # noqa: F401 — re-exported for PipelineConfig
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ConsoleSinkConfig(BaseModel):
+    """Console RunSink configuration."""
+
+    msg_truncate: int | None = 5000
+    log_llm_messages: bool = True
+    include_private_messages: bool = False
+
+    model_config = ConfigDict(extra="allow")
+
+
+class OtelConfig(BaseModel):
+    """OpenTelemetry sink configuration (traces + metrics)."""
+
+    enabled: bool = False
+    traces_file: str = "sinks/otel/traces.jsonl"
+    metrics_file: str = "sinks/otel/metrics.jsonl"
+    metrics_interval_ms: int = 30000
+    # 0 → SimpleSpanProcessor (each span exports immediately on end);
+    # >0 → BatchSpanProcessor with this schedule_delay_millis (spans batch
+    # for up to N ms before exporting). Lower latency vs fewer egress calls.
+    trace_export_interval_ms: int = 0
+    sample_rate: float = 1.0
+    otlp_endpoint: str | None = None
+    otlp_insecure: bool = True
+    otlp_headers: dict[str, str] | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class HealthSinkConfig(BaseModel):
+    """Heartbeat sink — pipeline writes only.
+
+    ``heartbeat_seconds`` is the cadence at which the pipeline appends
+    ``ok <iso-ts>`` lines to ``<run_dir>/sinks/health/.heartbeat``. On
+    ``run_end`` the sink also writes a final ``complete <ts>`` (success)
+    or ``paused <ts>`` (failed/stopped/interrupted) line.
+
+    Liveness derivation lives elsewhere (server-side); HealthSink is a
+    pure write-only channel and never reads back or interprets the file.
+    """
+
+    heartbeat_seconds: float = 5.0
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SinksConfig(BaseModel):
+    """Run-bus output channels — see ``aii_config/pipeline/io/sinks.yaml``."""
+
+    console: ConsoleSinkConfig = Field(default_factory=ConsoleSinkConfig)
+    otel: OtelConfig = Field(default_factory=OtelConfig)
+    health: HealthSinkConfig = Field(default_factory=HealthSinkConfig)
+
+    model_config = ConfigDict(extra="allow")
+
+
+# ── Sub-configs that ride under ``init:`` in pipeline.yaml ──────────────────
+
+
+class LlmGenSummaryConfig(BaseModel):
+    """LLM-generated short summary (one per agent / llm message).
+
+    Default-on — when the per-run ``pipeline.yaml`` lacks the
+    ``init.llm_gen_summary`` block (some bootstrap paths carry only
+    the user-config subset, which doesn't define it), the missing
+    field would otherwise default to disabled and ship every message
+    with an empty ``summary`` on the slim wire. The buffer is cheap
+    and the FE has no working fallback, so opt-in by default —
+    explicit ``enabled: false`` still wins.
+    """
+
+    enabled: bool = True
+    min_chars: int = 30
+    max_chars: int = 65
+    max_concurrent: int = 10
+
+    model_config = ConfigDict(extra="allow")
+
+
+class LlmGenInterimSummaryConfig(BaseModel):
+    """LLM-generated interim narrative summary (long-running tasks)."""
+
+    enabled: bool = True
+    min_chars: int = 180
+    max_chars: int = 300
+    interval_s: int = 120
+
+    model_config = ConfigDict(extra="allow")
+
+
+class RetryContextConfig(BaseModel):
+    """Pod-retry prompt-rebuild budget (consumed by exec_mode_router_runpod)."""
+
+    truncate_chars: int = 3000
+    messages: int = 20
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ToolConfig(BaseModel):
+    """Single tool configuration."""
+
+    max_concurrent: int = 100
+    cache_ttl_hours: float = 10.0
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ToolsConfig(BaseModel):
+    """All tool configurations."""
+
+    aii_web_tools__search: ToolConfig = Field(default_factory=ToolConfig)
+    aii_web_tools__fetch: ToolConfig = Field(default_factory=ToolConfig)
+    aii_web_tools__fetch_grep: ToolConfig = Field(default_factory=ToolConfig)
+
+    model_config = ConfigDict(extra="allow")
+
+
+class PipelineControlConfig(BaseModel):
+    """Pipeline execution control.
+
+    Resume / fork are no longer config-driven. cli.py picks
+    ``Run.fresh`` / ``Run.from_resume`` / ``Run.from_fork`` based on
+    flags; the pipeline reads ``run._pending_resume_target`` and
+    ``run.prompt`` to decide what to do at boot.
+    """
+
+    first_step: str = "hypo_loop"
+    last_step: str = "gen_paper_repo"
+
+    model_config = ConfigDict(extra="allow")
+
+
+class InitConfig(BaseModel):
+    """Initialization settings.
+
+    Run-identity fields (``run_name`` / ``reuse_run_dir`` / ``llm_gen_title``)
+    used to live here as user-overridable config but were promoted to CLI-only
+    behavior — they're either auto-derived (run_name auto-generated for fresh
+    runs; reuse_run_dir derived from fork/resume mode) or fully internal
+    (llm_gen_title is generated by the pipeline). Today only the substantive
+    init knobs survive.
+    """
+
+    run_dir: str = "aii_data/runs"
+    runpod_outputs_directory: str = "/ai-inventor/aii_data/runs"
+    pipeline: PipelineControlConfig = Field(default_factory=PipelineControlConfig)
+
+    llm_gen_summary: LlmGenSummaryConfig = Field(default_factory=LlmGenSummaryConfig)
+    llm_gen_interim_summary: LlmGenInterimSummaryConfig = Field(
+        default_factory=LlmGenInterimSummaryConfig
+    )
+    retry_context: RetryContextConfig = Field(default_factory=RetryContextConfig)
+
+    # ── User uploads staging ──
+    # If set, pipeline copies contents of this directory into {run_dir}/user_uploads/
+    # at startup. For fresh runs, the server stages drag-uploaded files here and
+    # passes the path via the ``--uploads-from`` CLI flag. For forks, points at
+    # the parent run's user_uploads/ directory.
+    user_uploads_copy_from: str | None = None
+    # If true, the source directory is deleted after copying. Set via the
+    # ``--uploads-remove-source`` CLI flag. Default false — fresh-run spawns
+    # opt in; fork preserves the parent's files.
+    user_uploads_remove_source: bool = False
+
+    # ── Fork inheritance ──
+    # If set, pipeline recursively copies the contents of this parent run
+    # directory into the fork's run_dir at startup. Telemetry log files and
+    # the STOPPED marker are skipped — the fork writes its own. Everything
+    # else (config/, iter_*/ outputs, ledgers/, trace artifacts, etc.) is
+    # inherited so trace tab, files panel, and any future tools that read
+    # from the run dir see the parent's data until the fork's pipeline
+    # overwrites/extends it.
+    run_inherit_from: str | None = None
+    # Smart-cutoff knobs paired with the fork's first_step / inject task.
+    # Default: copy everything except the SKIP_NAMES list — keeps "add new
+    # stuff and it just works" semantics (any unknown dir is inherited).
+    # Setting these prunes step output dirs that come *after* the fork
+    # point so the fork doesn't briefly show stale "future" data from the
+    # parent before its own pipeline regenerates it.
+    #
+    # `run_inherit_cutoff_step`: the fork's pipeline step (matches
+    # PIPELINE_SEQUENCE: "seed_hypo" / "hypo_loop" / "invention_loop" /
+    # "gen_paper_repo"). Top-level dirs whose owning step is strictly after
+    # this are skipped (e.g. when forking at "invention_loop", skip
+    # "4_gen_paper_repo/").
+    run_inherit_cutoff_step: str | None = None
+    # `run_inherit_cutoff_iter`: when forking from inside hypo_loop or
+    # invention_loop, the iter number where the fork branches. iter_(N+1)+
+    # are skipped; iter_<N is copied in full.
+    run_inherit_cutoff_iter: int | None = None
+    # `run_inherit_cutoff_substep`: within iter_N, the substep where the
+    # fork happens (e.g. "upd_hypo" in invention_loop). That substep and
+    # everything after it in the loop's substep order is skipped; earlier
+    # substeps in iter_N are copied.
+    run_inherit_cutoff_substep: str | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+    def resolve_outputs_directory(self, mode: str) -> str:
+        """Resolve outputs directory.
+
+        AII_DATA_DIR env var overrides both YAML values when set (parity with
+        aii_server settings.py — keeps RunPod volume mounts and dev overrides
+        working without editing pipeline.yaml).
+        """
+        env_root = os.environ.get("AII_DATA_DIR")
+        if env_root:
+            return env_root
+        if mode == "runpod":
+            return self.runpod_outputs_directory
+        return self.run_dir
+
+
+class TemplateIdsConfig(BaseModel):
+    """Pre-resolved RunPod template IDs.
+
+    Populated by ``deploy_and_run`` (via ``ensure_all_templates``) at the
+    start of each remote deploy; consumed downstream by
+    ``RunPodAgentDispatcher`` (worker keys) and the rest of
+    ``aii_runpod.deploy.remote`` (server + orchestrator keys).
+    """
+
+    aii_server: str = ""
+    orchestrator: str = ""
+    worker_gpu: str = ""
+    worker_cpu_heavy: str = ""
+    worker_cpu_light: str = ""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ComputeProfileConfig(BaseModel):
+    """Single compute profile — maps a tier name to RunPod hardware."""
+
+    runpod_id: str = ""
+    fallback_runpod_ids: list[str] = []
+    fallback_runpod_id: str = ""
+    pod_per_instance_retries: int = 5
+    template: str = ""
+    description: str = ""
+    container_disk_gb: int = 40
+    fallback_description: str = ""
+
+    @property
+    def all_fallback_ids(self) -> list[str]:
+        """Retrieve all fallback pod IDs."""
+        if self.fallback_runpod_ids:
+            return self.fallback_runpod_ids
+        return [self.fallback_runpod_id] if self.fallback_runpod_id else []
+
+    model_config = ConfigDict(extra="allow")
+
+
+class PodStartConfig(BaseModel):
+    """Pod startup retry timing."""
+
+    retry_delay: float = 10.0
+    healthcheck_timeout: int = 600
+
+    model_config = ConfigDict(extra="allow")
+
+
+class RunPodConfig(BaseModel):
+    """RunPod execution settings."""
+
+    data_center_id: str = "EU-RO-1"
+    cloud_type: str = "SECURE"
+    network_volume_id: str = ""
+    network_volume_name: str = "aii-pipeline-data"
+    volume_size_gb: int = 50
+    docker_image: str = "amgrobelnik/aii-pipeline:latest"
+    pod_timeout: int = 3600
+    pod_start: PodStartConfig = Field(default_factory=PodStartConfig)
+    compute_profiles: dict[str, ComputeProfileConfig] = Field(default_factory=dict)
+    artifact_type_profiles: dict[str, list[str]] = Field(default_factory=dict)
+    template_ids: TemplateIdsConfig = Field(default_factory=TemplateIdsConfig)
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ExecuteEnvConfig(BaseModel):
+    """Exec env mode configuration (local | runpod)."""
+
+    mode: str = "local"
+    runpod: RunPodConfig = Field(default_factory=RunPodConfig)
+
+    model_config = ConfigDict(extra="allow")

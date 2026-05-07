@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["metrics_agg", "datasets"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "description": "Optional top-level metadata (e.g. evaluation_name, description, parameters, baselines)",
+      "additionalProperties": true
+    },
+    "metrics_agg": {
+      "type": "object",
+      "description": "Aggregate metrics across all examples",
+      "patternProperties": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+          "type": "number",
+          "description": "Metric value (can be integer or float)"
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "datasets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["dataset", "examples"],
+        "properties": {
+          "dataset": {
+            "type": "string",
+            "description": "Source dataset name"
+          },
+          "examples": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["input", "output"],
+              "properties": {
+                "input": {
+                  "type": "string",
+                  "description": "Task prompt, question, or multi-turn conversation"
+                },
+                "output": {
+                  "type": "string",
+                  "description": "Expected agent response or action sequence"
+                }
+              },
+              "patternProperties": {
+                "^metadata_[a-zA-Z_][a-zA-Z0-9_]*$": {
+                  "description": "Per-example metadata (e.g. metadata_fold, metadata_feature_names)"
+                },
+                "^predict_[a-zA-Z_][a-zA-Z0-9_]*$": {
+                  "type": "string",
+                  "description": "Prediction from a method (e.g. predict_baseline, predict_our_method)"
+                },
+                "^eval_[a-zA-Z_][a-zA-Z0-9_]*$": {
+                  "type": "number",
+                  "description": "Per-example evaluation metric"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

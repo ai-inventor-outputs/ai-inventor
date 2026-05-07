@@ -1,0 +1,102 @@
+# =============================================================================
+# Exec env — execution environment (where agent work runs)
+# =============================================================================
+# Was previously ``aii_config/exec_backend.yaml``; renamed to align with
+# the agent_backend / llm_backend / execute_env triple under aii_config/pipeline/harness/.
+# The Python module ``aii_lib/execute_env`` (was ``aii_lib/exec_backend``) holds
+# the runtime — ``LocalEnv``, ``RunPodEnv``, ``ComputeProfile``.
+#
+# Public yaml documents EVERY field that can appear under ``runpod:`` with
+# blanks/examples. Real values (data center id, network volume id, exact
+# pod retry counts, GPU/CPU spec lists) live in
+# ``execute_env.private.yaml`` — gitignored. The loader deep-merges them on
+# top, so any public-default field stays in effect unless private overrides.
+# =============================================================================
+
+# ``mode`` (local | runpod) is intentionally NOT a yaml setting — the
+# launcher (aii_launcher --local / --runpod) is the single source of truth
+# and threads its intent down to every ``aii_pipeline`` invocation as a
+# CLI arg (``--execute-mode``). Default falls back to ``local``
+# (ExecuteEnvConfig.mode) when no launcher / CLI override is in play
+# (e.g. direct ``aii_pipeline`` invocation).
+
+# RunPod-specific config. Empty/example values here — the real provisioning
+# settings live in execute_env.private.yaml (data_center_id, compute profiles,
+# template ids, fallback hardware chains).
+runpod:
+  # API key is read from $RUNPOD_API_KEY in .env — never put it in any yaml.
+  # api_key: ${RUNPOD_API_KEY}
+
+  # Data center id — set in private (e.g. "EU-RO-1"). Determines which
+  # RunPod region pods are scheduled in.
+  data_center_id: ""
+
+  # SECURE | COMMUNITY — set in private. SECURE pods cost more but have
+  # stricter isolation and consistent availability.
+  cloud_type: ""
+
+  # Persistent network volume mounted at all worker pods (shared dataset
+  # cache, repo checkouts, etc.). Both id and name lookup are supported —
+  # id wins when both are present.
+  network_volume_id: ""
+  network_volume_name: ""
+  volume_size_gb: 50
+
+  # Mount point inside pods.
+  volume_mount_path: /ai-inventor/aii_data
+
+  # Default per-pod timeout (seconds) injected onto every claude_agent
+  # block at config load. Per-step ``claude_agent.pod_timeout`` overrides.
+  pod_timeout: 7200
+
+  # Whole-chain re-runs after every spec in a profile chain has been
+  # exhausted (transient stock issues might clear in a few minutes).
+  pod_start_retries: 2
+
+  # Per-attempt timing for pod startup.
+  pod_start:
+    retry_delay: 60          # seconds between startup retries
+    healthcheck_timeout: 600 # seconds to wait for HTTP healthcheck per attempt
+
+  # Compute profiles — one per role (deploy_ability_server,
+  # deploy_orchestrator, gpu, cpu_heavy, cpu_light). Each entry has a
+  # primary ``runpod_id`` + a fallback chain consulted when stock runs
+  # out. CPU ids look like ``cpu3m-2-16`` (flavor-vcpu-ramGB), GPU ids
+  # are RunPod product names like ``NVIDIA RTX A4500``.
+  #
+  # Public yaml ships an empty map; the actual profiles + fallback chains
+  # live in execute_env.private.yaml (long lists, keep them off the public
+  # repo to avoid pinning hardware preferences in the changelog).
+  compute_profiles: {}
+  # Example shape (see execute_env.private.yaml for the real one):
+  #   gpu:
+  #     runpod_id: "NVIDIA RTX A4500"
+  #     fallback_runpod_ids: ["NVIDIA RTX A4000", ...]
+  #     pod_per_instance_retries: 5
+  #     template: worker_gpu
+  #     container_disk_gb: 40
+  #     description: "1x A4500, 20GB VRAM, 7 vCPUs"
+
+  # Map artifact_type → list of compute profiles to try (in order).
+  # Empty in public; private picks per type.
+  artifact_type_profiles: {}
+  # Example:
+  #   dataset:    [gpu, cpu_heavy]
+  #   experiment: [gpu, cpu_heavy]
+  #   evaluation: [gpu, cpu_heavy]
+  #   proof:      [cpu_light]
+  #   research:   [cpu_light]
+
+  # RunPod templates — single source of truth for all containers.
+  # ``aii_runpod.pod_infra.pod_templates`` ensures these exist on RunPod
+  # (creates if missing). Public ships the structure; image refs + start
+  # commands live in private to keep the public repo from pinning a
+  # specific Docker tag.
+  templates: {}
+  # Example shape:
+  #   aii_server:
+  #     name: aii-server
+  #     image: ""             # set in private
+  #     cmd: []
+  #     ports: ["22/tcp", "8020/http", "3000/http"]
+  #     disk_gb: 40

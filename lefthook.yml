@@ -1,0 +1,286 @@
+# Lefthook config — Git hooks orchestrator. Replaces .pre-commit-config.yaml.
+#
+# One-time install: ``brew install lefthook`` (macOS) or download a binary
+# from https://github.com/evilmartians/lefthook/releases and put it on PATH.
+# Then run ``lefthook install`` from the repo root to register the git hook.
+#
+# Runs automatically on ``git commit`` against staged files. Skip with
+# ``git commit --no-verify`` if you absolutely have to.
+#
+# Why lefthook over pre-commit framework
+# ----------------------------------------
+# pre-commit framework promises hooks see staged content only, isolated
+# from any unstaged edits sitting on top of files in the WT. To deliver
+# that, it does ``git stash --keep-index --include-untracked`` before
+# every hook run, then ``git stash pop`` after. That dance races with
+# concurrent edits in a shared working tree (multiple agents editing
+# the same repo): if hook auto-fixes and the popped stash collide, pre-
+# commit rolls back ALL hook fixes — and you can't progress past
+# "Stashed changes conflicted with hook auto-fixes / Restored changes
+# from patch...". One session burned through 10 stash rounds before a
+# single subset commit could land.
+#
+# Lefthook makes a weaker contract — hooks see WT content as-is — and
+# in exchange does no stashing. The tradeoff: when 2+ agents touch the
+# *same* file, an auto-fix hook + ``stage_fixed: true`` here can pull
+# another agent's unstaged edits into your commit (a hook formats the
+# WT version which contains both staged + unstaged combined, then
+# re-stages the merged file). Different files = no risk. Worth it
+# given how much more reliably commits land.
+#
+# Other lefthook wins that came along for free: parallel hook execution
+# by default, single Go binary (no Python boot cost), one config file.
+#
+# Tools below run as native binaries (cargo install / uv tool install /
+# static download) rather than ``uvx <pkg>`` — uvx adds ~200-500ms of
+# package-resolve overhead per invocation, which compounds across 15+
+# hooks. See repo onboarding docs for the install commands.
+
+pre-commit:
+  parallel: true
+  # Skip all pre-commit hooks during merge/rebase. Auto-fixers
+  # (``stage_fixed: true``) firing on each replayed commit during a
+  # rebase can mutate files mid-conflict-resolution, re-introducing
+  # conflicts you just resolved. Same logic for merge commits — the
+  # commit is the merge's resolution; let it through and lint at the
+  # next normal commit.
+  skip:
+    - merge
+    - rebase
+  commands:
+    # ─── Secret scanning ────────────────────────────────────────────
+    # Scan staged content for leaked secrets. Project-specific deny-list
+    # config is at aii_public/gitleaks.toml; that file is gitignored so
+    # its rules don't enter the public release.
+    gitleaks:
+      run: gitleaks protect --staged
+
+    # ─── Python: ruff lint + format ────────────────────────────────
+    # Native ``ruff`` binary instead of uvx — kills uvx package-resolve
+    # overhead. Install once: ``uv tool install ruff==0.14.0`` (or pin
+    # whatever version this repo standardizes on).
+    # ``stage_fixed: true`` so auto-fixes are included in the commit.
+    # ``exclude`` skips vendored skill bundles under .claude/skills/ and
+    # .agents/skills/ — those ship with their own style and we don't
+    # rewrite them to match our project's ruff config.
+    ruff:
+      glob: "*.{py,pyi}"
+      exclude:
+        - ".claude/skills/**/*"
+        - ".agents/skills/**/*"
+      run: ruff check --fix {staged_files}
+      stage_fixed: true
+    ruff-format:
+      glob: "*.{py,pyi}"
+      exclude:
+        - ".claude/skills/**/*"
+        - ".agents/skills/**/*"
+      run: ruff format {staged_files}
+      stage_fixed: true
+
+    # ─── Python: dead code (asottile/dead) ─────────────────────────
+    # Pure-Python flat-namespace dead-code finder. Complements Repotoire
+    # below — dead's name-matching catches unused module-level symbols
+    # Repotoire's call-graph misses, while Repotoire catches structural
+    # issues dead doesn't model. ``dead_allowlist.txt`` lists symbols
+    # dead can't see as used (Django settings, framework callbacks,
+    # Pydantic validators); add new entries there with a comment WHY
+    # when dead flags a real false positive. Project-wide — dead does
+    # its own ``git ls-files`` walk, so no ``{staged_files}``. Always
+    # exits 0 so we wrap with ``! ... | grep -q .`` to fail on any
+    # output. Install once: ``uv tool install dead==2.1.0``.
+    dead:
+      glob: "*.{py,pyi}"
+      run: 'sh -c ''out=$(dead --files "^(aii_lib|aii_pipeline|aii_server|aii_launcher|aii_runpod)/.*\.py$" --symbol-allowlist dead_allowlist.txt 2>&1); [ -z "$out" ] || { printf "%s\n" "$out"; exit 1; }'''
+
+    # ─── Python: code-health audit (Repotoire) ─────────────────────
+    # Multi-language Rust-native tool — dead code (overlaps with dead
+    # above) PLUS error-handling bugs (empty catches, async without
+    # await), security issues, and complexity hotspots. ``--severity
+    # high`` filters out noisy low/medium findings. Iterates each
+    # Python subproject (one path per invocation; Repotoire takes a
+    # single PATH arg).
+    #
+    # Currently SKIPPED: repotoire 0.6.0 panics deterministically on
+    # ``aii_lib`` / ``aii_runpod`` with `index out of bounds: len 1510
+    # idx 1564` in ``predictive/embeddings.rs:109`` — a third-party
+    # Rust bug. Re-enable once the upstream tool ships a fix; until
+    # then `dead`, `ruff`, and `ty` cover the same ground.
+    repotoire-py:
+      skip: true
+      glob: "*.{py,pyi}"
+      run: bash -c 'for d in aii_lib aii_pipeline aii_server aii_launcher aii_runpod; do repotoire analyze "$d" --severity high || exit; done'
+
+    # ─── Universal hygiene (pre-commit/pre-commit-hooks) ────────────
+    # ``stage_fixed: true`` for the auto-fixers so trailing-whitespace
+    # and missing-final-newline corrections land in the commit.
+    # whitespace-format collapses trailing-whitespace + end-of-file-fixer
+    # into one Rust binary — kills two uvx cold-starts. Flags mirror the
+    # prior pre-commit-hooks behavior: strip trailing whitespace, ensure
+    # final LF newline, normalize CRLF→LF.
+    whitespace-format:
+      # Text-only globs — whitespace-format chokes decoding binaries
+      # (PNG, etc.) as UTF-8 and exits non-zero. Skip vendored skill
+      # bundles for the same reason as ruff/rumdl.
+      glob: "*.{py,pyi,ts,tsx,js,jsx,mjs,cjs,json,toml,yaml,yml,md,sh,bash,css,html,sql,xml,txt,cfg,ini}"
+      exclude:
+        - ".claude/skills/**/*"
+        - ".agents/skills/**/*"
+      run: whitespace-format --add-new-line-marker-at-end-of-file --remove-trailing-whitespace --normalize-new-line-markers --new-line-marker linux {staged_files}
+      stage_fixed: true
+    # check-merge-conflict — bare grep is instant (~10ms) vs ~2s uvx
+    # cold-start. Looks for the unique 7-char opening conflict marker
+    # via fixed-string match (no regex needed; the alternation we
+    # previously used forced a bash subshell which lefthook's sh
+    # parser choked on with a "( unexpected" error).
+    check-merge-conflict:
+      # Operate on the staged diff text directly instead of looping over
+      # filenames — lefthook joins {staged_files} unquoted, and our repo
+      # has paths with shell metachars (``foo (1).pdf``, Next.js route
+      # groups ``aii_frontend/app/(app)/...``) that blow up sh parsing.
+      # ``git diff --cached`` emits a single textual diff; conflict
+      # markers in newly-added lines start with ``+<<<<<<<``. Empty grep
+      # match → exit 1 → flipped to 0; any match → exit 0 → flipped to 1.
+      run: '! git diff --cached --diff-filter=AM | grep -q "^+<<<<<<<"'
+    # The remaining pre-commit-hooks utilities use bare binaries —
+    # install the package once with ``uv tool install pre-commit-hooks
+    # ==5.0.0`` and the 33 console scripts (check-*, *-fixer, etc.)
+    # land on PATH. Skips uvx's per-run package-resolve overhead.
+    check-case-conflict:
+      run: check-case-conflict {staged_files}
+    check-added-large-files:
+      run: check-added-large-files --maxkb=102400 {staged_files}
+    check-yaml:
+      glob: "*.{yaml,yml}"
+      # *.private.yaml siblings sometimes carry comments or values that
+      # yaml.safe_load handles fine but the strict parser flags. Keep relaxed.
+      run: check-yaml --allow-multiple-documents {staged_files}
+    # taplo lint replaces uvx-wrapped check-toml — same syntax-error
+    # detection (uv sync / ruff / ty all blow up on malformed TOML)
+    # but native Rust binary, no uvx cold-start. ``lint`` validates
+    # without writing; ``check`` would also enforce formatting.
+    check-toml:
+      glob: "*.toml"
+      run: taplo lint {staged_files}
+
+    # ─── Spell check (typos — Rust, fast) ──────────────────────────
+    # ``_typos.toml`` carries the project's domain-term allowlist
+    # (gen_strat, fracton, lamda, etc.) — add new entries there with a
+    # comment WHY when typos flags a real false positive. ``--force-
+    # exclude`` overrides the upstream ``--write-changes`` default; we
+    # report typos and block, not silently rewrite source files.
+    # Walks the tree from ``.`` instead of taking ``{staged_files}``
+    # as args — typos has heavy per-file-arg overhead (~0.5-1ms per
+    # arg × 2000+ tracked files = 7-12s). Walking the tree is ~0.3s
+    # because typos uses its own .gitignore/_typos.toml-aware walker.
+    # Trade-off: scans every tracked file every commit, not just
+    # staged. That's correct behavior anyway — typos in an unstaged
+    # file are still real typos. Exclusions live in _typos.toml's
+    # ``[files] extend-exclude`` (which previously duplicated the
+    # lefthook ``exclude:`` regex). Install once: ``cargo install typos-cli``.
+    typos:
+      run: typos --force-exclude .
+
+    # ─── Frontend: oxfmt format ────────────────────────────────────
+    # ``root: aii_frontend/`` scopes paths to that subdir AND runs the
+    # command there — replaces our previous pre-commit-fe.sh wrapper.
+    # ``stage_fixed: true`` so format fixes land in the commit.
+    # ``--no-error-on-unmatched-pattern`` tolerates the "every staged
+    # file is in oxfmt's internal ignore" case (e.g. a commit touching
+    # only ``.gitignore``-respected codegen) — without it, oxfmt exits
+    # 2 and blocks an otherwise-clean commit.
+    oxfmt-fe:
+      root: "aii_frontend/"
+      glob: "**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,md,yaml,yml}"
+      exclude: "package-lock.json"
+      run: ./node_modules/.bin/oxfmt --no-error-on-unmatched-pattern {staged_files}
+      stage_fixed: true
+
+    # ─── Frontend: oxlint lint + auto-fix ──────────────────────────
+    # ``--no-error-on-unmatched-pattern`` for the same reason as oxfmt
+    # above — staged-file lists that fully overlap with
+    # ``.oxlintrc.json``'s ``ignorePatterns`` (codegen: ``lib/api/openapi.json``,
+    # ``lib/types/backend.ts``, ``lib/api/_orval/**``, ``lib/generated/**``)
+    # would otherwise exit 1 with "No files found to lint".
+    oxlint-fe:
+      root: "aii_frontend/"
+      glob: "**/*.{ts,tsx,js,jsx,mjs,cjs}"
+      run: ./node_modules/.bin/oxlint --no-error-on-unmatched-pattern --fix {staged_files}
+      stage_fixed: true
+
+    # ─── Frontend: dead-code (Fallow) ──────────────────────────────
+    # Replaces ``knip``. Fallow is the Rust-native equivalent — same
+    # scope (unused files, exports, deps, duplicate exports), 3-36×
+    # faster on this codebase (0.15s vs ~12s for knip cold). Drop-in
+    # via ``fallow migrate`` for existing knip.json configs.
+    fallow-fe:
+      root: "aii_frontend/"
+      glob: "**/*.{ts,tsx,js,jsx,mjs,cjs,json}"
+      run: fallow dead-code
+
+    # ─── Markdown linting ──────────────────────────────────────────
+    # rumdl is the Rust port of markdownlint — same rule IDs (MDxxx),
+    # reads existing .markdownlint config, ~30-100× faster than the
+    # npx markdownlint-cli we used previously. Disable list is comma-
+    # separated (markdownlint-cli used space-separated).
+    rumdl:
+      glob: "*.md"
+      # Skip vendored skill bundles (.claude/skills/, .agents/skills/);
+      # their SKILL.md files ship with upstream-determined formatting.
+      # Skip neurips/resources/** — research-paper draft prose with
+      # citation tables, <details>/<summary> HTML, and intentional
+      # phase-numbered lists (steps 7-8, 9-11 across phases). Strict
+      # markdown rules fight authorial intent here.
+      exclude:
+        - ".claude/skills/**/*"
+        - ".agents/skills/**/*"
+        - "neurips/resources/**"
+      # MD013 line-length, MD033 inline-html, MD041 first-line-h1,
+      # MD057 relative-link-target-exists (too brittle: aii_public/README.md
+      # links to LICENSE/CONTRIBUTING.md that exist in the deploy-target
+      # repo, not this repo; planning docs reference docs not yet written).
+      # Install once: ``uv tool install rumdl`` (puts the binary on
+      # PATH; skips uvx's per-run overhead).
+      run: rumdl check -d MD013,MD033,MD041,MD057 {staged_files}
+
+    # ─── Shell linting ─────────────────────────────────────────────
+    # Native ``shellcheck`` binary instead of uvx-wrapped shellcheck-py
+    # — kills ~10s cold-start. Install once: download the static
+    # binary from https://github.com/koalaman/shellcheck/releases
+    # (``shellcheck-vX.X.X.linux.x86_64.tar.xz``) and place on PATH.
+    # ``--severity=warning`` keeps info-level noise (SC2015, SC2086)
+    # out of the hook output.
+    shellcheck:
+      glob: "*.{sh,bash}"
+      run: shellcheck --severity=warning {staged_files}
+
+    # ─── Project-wide checks (full module graph) ───────────────────
+    # ty / tsgo-fe / repotoire-fe each analyze the full project, so
+    # they run regardless of which files were staged. Project-wide is
+    # the only correct scope: file-scoped type checks miss errors
+    # triggered by edits in dependency modules. All three run in
+    # parallel with everything else under ``parallel: true``.
+
+    # ─── Python: ty type check (Astral) ────────────────────────────
+    # Install once: ``uv tool install ty==0.0.34``. Config in [tool.ty]
+    # under root pyproject.toml.
+    ty:
+      glob: "*.{py,pyi}"
+      run: ty check
+
+    # ─── Frontend: tsgo typecheck (project-wide) ───────────────────
+    # Incremental compile per tsconfig.json's ``incremental: true`` —
+    # cold run ~8s, warm run ~1-2s after the first. tsbuildinfo lives at
+    # aii_frontend/tsconfig.tsbuildinfo and is gitignored.
+    tsgo-fe:
+      root: "aii_frontend/"
+      glob: "**/*.{ts,tsx,js,jsx,mjs,cjs,json}"
+      run: ./node_modules/.bin/tsgo --noEmit
+
+    # ─── Frontend: code-health audit (Repotoire) ───────────────────
+    # Catches bugs Fallow/oxlint can't: hooks-in-loops, test code in
+    # production, unsafe async patterns, complexity hotspots.
+    repotoire-fe:
+      root: "aii_frontend/"
+      glob: "**/*.{ts,tsx,js,jsx,mjs,cjs,json}"
+      run: repotoire analyze . --severity high
