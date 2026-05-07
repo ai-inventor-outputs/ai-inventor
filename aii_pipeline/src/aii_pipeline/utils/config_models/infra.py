@@ -281,7 +281,7 @@ class RunPodConfig(BaseModel):
     network_volume_id: str = ""
     network_volume_name: str = "aii-pipeline-data"
     volume_size_gb: int = 50
-    docker_image: str = "amgrobelnik/aii-pipeline:latest"
+    docker_image: str = "ai-inventor/aii-pipeline:latest"
     pod_timeout: int = 3600
     pod_start: PodStartConfig = Field(default_factory=PodStartConfig)
     compute_profiles: dict[str, ComputeProfileConfig] = Field(default_factory=dict)
